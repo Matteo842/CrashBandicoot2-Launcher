@@ -1,0 +1,162 @@
+# =============================================================================
+# Crash Bandicoot 2 Launcher — LEGAL / SAFETY .gitignore
+# If something here looks "useful to commit", it is NOT. Sony/Activision own
+# Crash. We ship TOOLS + RUNTIME only. Never push dumps or game-derived code.
+# When in doubt: do NOT force-add. Ask before `git add -f`.
+# =============================================================================
+
+# --- IDE / OS junk -----------------------------------------------------------
+.idea/
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+Thumbs.db
+Desktop.ini
+.DS_Store
+*~
+riderModule.iml
+/_ReSharper.Caches/
+/packages/
+
+# --- Build / publish outputs -------------------------------------------------
+bin/
+obj/
+out/
+publish/
+publish-*/
+publish-single/
+artifacts/
+[Dd]ebug/
+[Rr]elease/
+# Keep in-game ImGui debug panels (matched by [Dd]ebug/ above)
+!**/Panels/Debug/
+!**/Panels/Debug/**
+x64/
+x86/
+*.appx
+*.msix
+*.msi
+*.nupkg
+
+# --- Retail disc dumps & images (THE lawsuit fuel) ---------------------------
+*.bin
+*.cue
+*.iso
+*.img
+*.ecm
+*.mds
+*.mdf
+*.nrg
+*.ccd
+*.sub
+*.img.bak
+*.toc
+*.chd
+*.cso
+*.isz
+*.pbp
+*.cdi
+*.dump
+*.raw
+# Common dump naming (even without extension tricks)
+**/Crash Bandicoot*
+**/crash*bandicoot*.bin
+**/crash*bandicoot*.cue
+**/SCES_009.67
+**/SCES-00967*
+**/SCES_009*
+**/SCUS_941.54
+**/SCUS-94154*
+
+# --- Disc overlay payloads (mod asset folders) -------------------------------
+examples/mods/**/disc/**
+!examples/mods/**/disc/README.md
+!examples/mods/**/disc/**/README.md
+/mods/
+/captures/
+
+# Common Crash disc asset extensions anywhere
+*.NSD
+*.NSF
+*.nsd
+*.nsf
+*.VAB
+*.vab
+*.VH
+*.vh
+*.SEQ
+*.seq
+*.STR
+*.str
+*.XA
+*.xa
+
+# --- Recompiled / derived game code (derivative of retail EXE) ---------------
+CrashBandicoot2.Recompiled/**
+!CrashBandicoot2.Recompiled/README.md
+**/_gate_regen/
+**/_test_apply*/
+**/_patch_*main.cs
+game.recomp.dll
+**/game.recomp.dll
+**/game.recomp.pdb
+**/Recompiled/main.cs
+**/Recompiled/Entry.cs
+**/Recompiled/Stubs.cs
+# Generated recomp output dirs only — keep CrashBandicoot2.Launcher/Recomp/
+/recomp/
+**/bin/**/recomp/
+!CrashBandicoot2.Launcher/Recomp/
+!CrashBandicoot2.Launcher/Recomp/**
+
+# --- Runtime / player data next to the exe ----------------------------------
+settings.json
+interface.ini
+carda.sav
+cardb.sav
+save/
+game/
+*.sav
+*.mcd
+*.mcr
+memcard*
+*.srm
+
+# --- Logs / crash dumps / temp -----------------------------------------------
+logs/
+*.log
+*.tmp
+*.temp
+*.dmp
+*.stackdump
+hs_err_pid*
+
+# --- Secrets / credentials ---------------------------------------------------
+.env
+.env.*
+!.env.example
+credentials*.json
+*secret*
+*apikey*
+*.pfx
+*.p12
+*.pem
+*.key
+
+# --- Native / tooling noise --------------------------------------------------
+*.pdb
+crash-*.dmp
+minidump*
+
+# --- Optional: local notes that might contain dump paths ---------------------
+LOCAL.md
+TODO.local.md
+*.local.json
+run.bat
+
+# Accidental nested Desktop/clone junk
+/CrashBandicoot-Launcher 2/
+
