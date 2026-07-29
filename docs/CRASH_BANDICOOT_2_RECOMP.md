@@ -3,7 +3,7 @@
 **Game (current dump):** Crash Bandicoot 2: Cortex Strikes Back (PAL)  
 **IDs:** `SCES-00967` / boot `SCES_009.67`  
 **Stack:** RecompOne static MIPS→C# + `RecompOne.Runtime`  
-**Status:** past CD/GPU init + first disc reads; next crash `unmapped call: 0x800120B0` (alpha jump table `@ 0x80010068` in `func_80012010`)
+**Status:** past pad-mode jump table; smoke runs 15s+ with PresentPump frames (pipeline **v27**)
 
 Lessons carried over from Crash 1 (SCUS-94900) — see that project's
 `docs/CRASH_BANDICOOT_RECOMP.md` for the full write-up.
@@ -53,7 +53,18 @@ NTSC-U would be `SCUS-94154` / `SCUS_941.54` — not targeted yet.
 | `CdRead: retry...` forever | HLE hi-level `CdRead`/`CdReadSync` + `CdStatus` (no shell-open) |
 | `unmapped call: 0x80049A64` | Post-pass: printf format jump table `@ 0x80010C2C` |
 | `unmapped call: 0x80056828` | Post-pass: state jump table `@ 0x80011198` |
-| `unmapped call: 0x800120B0` | **Next:** alpha jump table `@ 0x80010068` in `func_80012010` |
+| `unmapped call: 0x800120B0` | Post-pass: alpha jump table `@ 0x80010068` in `func_80012010` |
+| `unmapped call: 0x800152B8` | Post-pass: level-param jump table `@ 0x800101B0` in `func_80014D6C` |
+| `unmapped call: 0x800133AC` | Post-pass: stream-state jump table `@ 0x80010138` in `func_80013304` |
+| `unmapped call: 0x80012748` | Post-pass: entry-type jump table `@ 0x80010120` in `func_800126BC` |
+| `unmapped call: 0x800270B8` | Post-pass: game-mode jump table `@ 0x80010480` in `func_80026F14` |
+| `unmapped call: 0x8003BC64` | HLE patch `8003BBD8` → `LibEtc.MemcpyHw` (Duff halfword copy) |
+| `unmapped call: 0x8003A8B0` | RefineEnd + injected GOOL dispatch jump table in `func_8003A2AC` |
+| `unmapped call: 0x80037EE4` | Injected GOOL expr jump tables in `func_80037930` |
+| `unmapped call: 0x8003B00C` | Extended GOOL interpreter body + full handler table |
+| `unmapped call: 0x8003A27C` / `0x80039470` | Pre-entry trampolines + forced GOOL helper funcs in config |
+| `unmapped call: 0x80034818` | Pad-mode jump table @ `0x80010668` in `func_800347D4` |
+| `unmapped call: 0x80023F40` | Post-pass: cam-interp jump table `@ 0x80010438` in `func_80023D78` |
 
 ## Dev tip
 

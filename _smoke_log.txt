@@ -1,0 +1,13 @@
+[CrashBandicoot2] using saved disc: D:\GitHub\CrashBandicoot-Launcher 2\Crash Bandicoot 2 - Cortex Strikes Back (Europe) (En,Fr,De,Es,It).cue
+[smoke] launching D:\GitHub\CrashBandicoot-Launcher 2\CrashBandicoot2.Launcher\bin\Release\net10.0\game\9FA930CD5A2877EC\game.recomp.dll
+[Dispatcher] loaded overlay: main
+ResetGraph:jtb=8005df6c,env=8005dfb4
+rfs
+20 p lY
+[boot] PresentPump frame=0
+[boot] PresentPump frame=30
+[boot] PresentPump frame=60
+[boot] PresentPump frame=90
+[boot] PresentPump frame=120
+[boot] PresentPump frame=150
+[smoke] still running after 15s - OK (window likely open)

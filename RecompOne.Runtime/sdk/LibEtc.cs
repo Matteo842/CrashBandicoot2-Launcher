@@ -80,4 +80,18 @@ public static class LibEtc
             m.WriteU32(VBlankCountAddr, (uint)_vcount);
         }
     }
+
+    /// <summary>
+    /// SCES-00967 @ 0x8003BBD8 — retail Duff-device halfword copy (src=A0, dst=A1, n=A2 halfwords).
+    /// Recompiler emits mid-function jr targets as unmapped Dispatcher.Call.
+    /// </summary>
+    public static void MemcpyHw(CpuContext c, IMemory m)
+    {
+        uint src = c.A0;
+        uint dst = c.A1;
+        uint nBytes = c.A2 << 1;
+        for (uint i = 0; i < nBytes; i++)
+            m.WriteU8(dst + i, m.ReadU8(src + i));
+        c.V0 = dst;
+    }
 }

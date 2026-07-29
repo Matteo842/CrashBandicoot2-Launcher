@@ -101,7 +101,9 @@ public static class OverlayWriter
             if (config.LinearSweep)
                 SweepFunctions(funcs, mainInstrs, elfInfo?.NoTypeSymbols ?? [], "main");
 
+            KnownJumpTables.Prepare(funcs, mainInstrs);
             if (elfInfo != null) AnalyzeJumpTables(funcs, elfInfo, "main");
+            KnownJumpTables.Inject(funcs);
 
             ApplyStubsAndIgnored(funcs, config.Stubs, config.Ignored);
             overlayResults.Add(new OverlayResult("main", funcs, -1, 0, 0, mainInstrs));
@@ -190,7 +192,9 @@ public static class OverlayWriter
             if (overlayConfig.LinearSweep ?? config.LinearSweep)
                 SweepFunctions(funcs, instrs, elfInfo.NoTypeSymbols, overlayConfig.Name);
 
+            KnownJumpTables.Prepare(funcs, instrs);
             AnalyzeJumpTables(funcs, elfInfo, overlayConfig.Name);
+            KnownJumpTables.Inject(funcs);
 
             ApplyStubsAndIgnored(funcs, overlayConfig.Stubs.Concat(config.Stubs), overlayConfig.Ignored.Concat(config.Ignored));
             
@@ -295,9 +299,20 @@ public static class OverlayWriter
         foreach (var func in funcs.OrderBy(f => f.Start))
         {
             var labels = LabelManager.Collect(func);
+            uint bodyStart = func.Instructions.Length > 0 ? func.Instructions[0].Vram : func.Start;
+            // Pre-entry trampolines are branched to from handlers; ensure labels exist.
+            if (bodyStart < func.Start)
+            {
+                labels.Add(bodyStart);
+                foreach (var insn in func.Instructions)
+                {
+                    if (insn.Vram >= func.Start) break;
+                    labels.Add(insn.Vram);
+                }
+            }
             var ctx = new FunctionContext
             {
-                FuncStart = func.Start,
+                FuncStart = bodyStart,
                 FuncEnd = func.End,
                 KnownFunctions = knownFuncs,
                 Labels = labels,

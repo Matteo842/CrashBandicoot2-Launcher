@@ -7,7 +7,16 @@
   "cue": "Crash Bandicoot 2 - Cortex Strikes Back (Europe) (En,Fr,De,Es,It).cue",
   "linearSweep": true,
   "debug": false,
-  "functions": [],
+  "functions": [
+    { "address": "800390AC", "name": "func_800390AC" },
+    { "address": "80039198", "name": "func_80039198" },
+    { "address": "800392A4", "name": "func_800392A4" },
+    { "address": "8003939C", "name": "func_8003939C" },
+    { "address": "80039470", "name": "func_80039470" },
+    { "address": "800395A8", "name": "func_800395A8" },
+    { "address": "8003975C", "name": "func_8003975C" },
+    { "address": "8003991C", "name": "func_8003991C" }
+  ],
   "patches": [
     {
       "address": "80011E80",
@@ -122,6 +131,11 @@
     {
       "address": "8004A570",
       "target": "RecompOne.Runtime.Sdk.LibGpu.GpuBiosCallback",
+      "mode": "replace"
+    },
+    {
+      "address": "8003BBD8",
+      "target": "RecompOne.Runtime.Sdk.LibEtc.MemcpyHw",
       "mode": "replace"
     }
   ],

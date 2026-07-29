@@ -310,6 +310,7 @@ public static class FunctionDetector
     {
         maxEndIdx = Math.Clamp(maxEndIdx, startIdx + 1, all.Length);
         uint reach = all[startIdx].Vram;
+        bool sawComputedJr = false;
         for (int i = startIdx; i < maxEndIdx; i++)
         {
             var instr = all[i];
@@ -318,13 +319,33 @@ public static class FunctionDetector
                 uint tgt = instr.IsJump ? instr.JumpTarget : instr.BranchTarget;
                 if (tgt > reach && tgt > all[startIdx].Vram && tgt <= all[maxEndIdx - 1].Vram) reach = tgt;
             }
+
+            // jr to a register loaded from memory = threaded/dispatch goto (not a real end).
+            // Crash GOOL interpreters put the epilogue (jr $ra) before the handler bodies;
+            // stopping there orphans every case.
+            if (instr.IsJrRegister && !instr.IsReturn && IsLoadedReg(all, startIdx, i, instr.Rs))
+                sawComputedJr = true;
+
             if (IsFunctionEnd(all, startIdx, i) && instr.Vram >= reach)
             {
+                if (sawComputedJr && instr.IsReturn)
+                    continue;
+
                 int end = i + 2; // include the delay slot
                 return Math.Clamp(end, startIdx + 1, maxEndIdx);
             }
         }
         return maxEndIdx;
+    }
+
+    static bool IsLoadedReg(MipsInstruction[] all, int startIdx, int jrIdx, int reg)
+    {
+        for (int k = jrIdx - 1; k >= startIdx; k--)
+        {
+            if (!WritesReg(all[k], reg)) continue;
+            return all[k].IsLoad;
+        }
+        return false;
     }
     
     static bool IsFunctionEnd(MipsInstruction[] all, int startIdx, int i)

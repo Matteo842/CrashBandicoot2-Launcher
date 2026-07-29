@@ -14,6 +14,13 @@ public static class PostPassApplier
         var patched = FixCdStatusJumpTable(src);
         patched = FixPrintfJumpTable(patched);
         patched = FixStateJumpTable(patched);
+        patched = FixAlphaJumpTable(patched);
+        patched = FixLevelParamJumpTable(patched);
+        patched = FixStreamStateJumpTable(patched);
+        patched = FixEntryTypeJumpTable(patched);
+        patched = FixGameModeJumpTable(patched);
+        patched = FixCamInterpJumpTable(patched);
+        patched = FixPadModeJumpTable(patched);
         if (!ReferenceEquals(src, patched) && patched != src)
             File.WriteAllText(mainCsPath, patched);
     }
@@ -534,6 +541,755 @@ public static class PostPassApplier
 
         src = src.Replace(needle, replacement, StringComparison.Ordinal);
         Console.WriteLine("[post-pass] applied state jump table fix (func_800567A0)");
+        return src;
+    }
+
+    /// <summary>
+    /// Alphabetical char→code jump table @ 0x80010068 inside func_80012010 (A–Z).
+    /// Used while parsing CD paths after the first sector reads (e.g. letter 'N').
+    /// </summary>
+    static string FixAlphaJumpTable(string src)
+    {
+        if (src.Contains("L800120B0:", StringComparison.Ordinal))
+            return src;
+
+        const string needle =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x68u));
+                    Dispatcher.Call(c, m, c.V0);
+                    return;
+                    c.V0 = 0u | 0x0001u;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x0004u;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x0002u;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x0003u;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x0005u;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x0006u;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x0007u;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x000Bu;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x000Cu;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x0014u;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x000Du;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x0010u;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x000Eu;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x0011u;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x0012u;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x0013u;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x0015u;
+                    goto L800120E4;
+                    c.V0 = 0u | 0x000Fu;
+                    goto L800120E4;
+                    L800120E0: ;
+                    c.V0 = 0u + 0u;
+                    L800120E4: ;
+            """;
+
+        const string replacement =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x68u));
+                    // SCES-00967: alpha jump table @ 0x80010068 → mid-function cases
+                    switch (c.V0)
+                    {
+                        case 0x80012050u: goto L80012050;
+                        case 0x80012058u: goto L80012058;
+                        case 0x80012060u: goto L80012060;
+                        case 0x80012068u: goto L80012068;
+                        case 0x80012070u: goto L80012070;
+                        case 0x80012078u: goto L80012078;
+                        case 0x80012080u: goto L80012080;
+                        case 0x80012088u: goto L80012088;
+                        case 0x80012090u: goto L80012090;
+                        case 0x80012098u: goto L80012098;
+                        case 0x800120A0u: goto L800120A0;
+                        case 0x800120A8u: goto L800120A8;
+                        case 0x800120B0u: goto L800120B0;
+                        case 0x800120B8u: goto L800120B8;
+                        case 0x800120C0u: goto L800120C0;
+                        case 0x800120C8u: goto L800120C8;
+                        case 0x800120D0u: goto L800120D0;
+                        case 0x800120D8u: goto L800120D8;
+                        case 0x800120E0u: goto L800120E0;
+                        default:
+                            Dispatcher.Call(c, m, c.V0);
+                            return;
+                    }
+                    L80012050: ;
+                    c.V0 = 0u | 0x0001u;
+                    goto L800120E4;
+                    L80012058: ;
+                    c.V0 = 0u | 0x0004u;
+                    goto L800120E4;
+                    L80012060: ;
+                    c.V0 = 0u | 0x0002u;
+                    goto L800120E4;
+                    L80012068: ;
+                    c.V0 = 0u | 0x0003u;
+                    goto L800120E4;
+                    L80012070: ;
+                    c.V0 = 0u | 0x0005u;
+                    goto L800120E4;
+                    L80012078: ;
+                    c.V0 = 0u | 0x0006u;
+                    goto L800120E4;
+                    L80012080: ;
+                    c.V0 = 0u | 0x0007u;
+                    goto L800120E4;
+                    L80012088: ;
+                    c.V0 = 0u | 0x000Bu;
+                    goto L800120E4;
+                    L80012090: ;
+                    c.V0 = 0u | 0x000Cu;
+                    goto L800120E4;
+                    L80012098: ;
+                    c.V0 = 0u | 0x0014u;
+                    goto L800120E4;
+                    L800120A0: ;
+                    c.V0 = 0u | 0x000Du;
+                    goto L800120E4;
+                    L800120A8: ;
+                    c.V0 = 0u | 0x0010u;
+                    goto L800120E4;
+                    L800120B0: ;
+                    c.V0 = 0u | 0x000Eu;
+                    goto L800120E4;
+                    L800120B8: ;
+                    c.V0 = 0u | 0x0011u;
+                    goto L800120E4;
+                    L800120C0: ;
+                    c.V0 = 0u | 0x0012u;
+                    goto L800120E4;
+                    L800120C8: ;
+                    c.V0 = 0u | 0x0013u;
+                    goto L800120E4;
+                    L800120D0: ;
+                    c.V0 = 0u | 0x0015u;
+                    goto L800120E4;
+                    L800120D8: ;
+                    c.V0 = 0u | 0x000Fu;
+                    goto L800120E4;
+                    L800120E0: ;
+                    c.V0 = 0u + 0u;
+                    L800120E4: ;
+            """;
+
+        if (!src.Contains(needle, StringComparison.Ordinal))
+        {
+            Console.WriteLine("[post-pass] warning: alpha jump table pattern not found");
+            return src;
+        }
+
+        src = src.Replace(needle, replacement, StringComparison.Ordinal);
+        Console.WriteLine("[post-pass] applied alpha jump table fix (func_80012010)");
+        return src;
+    }
+
+    /// <summary>
+    /// Level/mode parameter jump table @ 0x800101B0 inside func_80014D6C
+    /// (59 entries on S5-2; only 4 distinct mid-function targets).
+    /// </summary>
+    static string FixLevelParamJumpTable(string src)
+    {
+        if (src.Contains("L800152B8:", StringComparison.Ordinal))
+            return src;
+
+        const string needle =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x1B0u));
+                    Dispatcher.Call(c, m, c.V0);
+                    return;
+                    c.S1 = 0u | 0x8000u;
+                    c.S0 = 0u | 0x0002u;
+                    goto L800152C8;
+                    c.S1 = 0x00010000u;
+                    c.S0 = 0u | 0x0002u;
+                    goto L800152C8;
+                    c.S1 = 0u | 0xEA60u;
+                    c.S0 = 0u | 0x0001u;
+                    c.A2 = 0x00030000u;
+                    c.A2 = c.A2 | 0xEE40u;
+                    L800152C8: ;
+            """;
+
+        const string replacement =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x1B0u));
+                    // SCES-00967: level-param jump table @ 0x800101B0 → mid-function cases
+                    switch (c.V0)
+                    {
+                        case 0x800152A0u: goto L800152A0;
+                        case 0x800152ACu: goto L800152AC;
+                        case 0x800152B8u: goto L800152B8;
+                        case 0x800152C8u: goto L800152C8;
+                        default:
+                            Dispatcher.Call(c, m, c.V0);
+                            return;
+                    }
+                    L800152A0: ;
+                    c.S1 = 0u | 0x8000u;
+                    c.S0 = 0u | 0x0002u;
+                    goto L800152C8;
+                    L800152AC: ;
+                    c.S1 = 0x00010000u;
+                    c.S0 = 0u | 0x0002u;
+                    goto L800152C8;
+                    L800152B8: ;
+                    c.S1 = 0u | 0xEA60u;
+                    c.S0 = 0u | 0x0001u;
+                    c.A2 = 0x00030000u;
+                    c.A2 = c.A2 | 0xEE40u;
+                    L800152C8: ;
+            """;
+
+        if (!src.Contains(needle, StringComparison.Ordinal))
+        {
+            Console.WriteLine("[post-pass] warning: level-param jump table pattern not found");
+            return src;
+        }
+
+        src = src.Replace(needle, replacement, StringComparison.Ordinal);
+        Console.WriteLine("[post-pass] applied level-param jump table fix (func_80014D6C)");
+        return src;
+    }
+
+    /// <summary>
+    /// Stream/object state jump table @ 0x80010138 inside func_80013304
+    /// (30 entries on (halfword-2); 8 distinct mid-function targets).
+    /// </summary>
+    static string FixStreamStateJumpTable(string src)
+    {
+        if (src.Contains("L800133AC:", StringComparison.Ordinal))
+            return src;
+
+        const string needle =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x138u));
+                    Dispatcher.Call(c, m, c.V0);
+                    return;
+                    c.V0 = m.ReadU32((c.S0 + 0x10u));
+                    c.V1 = m.ReadU16(c.V0);
+                    c.V0 = 0u | 0x8765u;
+                    if (c.V1 == c.V0) {
+                        goto L800137AC;
+                    }
+            """;
+
+        const string replacement =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x138u));
+                    // SCES-00967: stream-state jump table @ 0x80010138 → mid-function cases
+                    switch (c.V0)
+                    {
+                        case 0x8001335Cu: goto L8001335C;
+                        case 0x800133ACu: goto L800133AC;
+                        case 0x80013440u: goto L80013440;
+                        case 0x8001350Cu: goto L8001350C;
+                        case 0x80013560u: goto L80013560;
+                        case 0x80013724u: goto L80013724;
+                        case 0x800137A0u: goto L800137A0;
+                        case 0x800137ACu: goto L800137AC;
+                        default:
+                            Dispatcher.Call(c, m, c.V0);
+                            return;
+                    }
+                    L8001335C: ;
+                    c.V0 = m.ReadU32((c.S0 + 0x10u));
+                    c.V1 = m.ReadU16(c.V0);
+                    c.V0 = 0u | 0x8765u;
+                    if (c.V1 == c.V0) {
+                        goto L800137AC;
+                    }
+            """;
+
+        if (!src.Contains(needle, StringComparison.Ordinal))
+        {
+            Console.WriteLine("[post-pass] warning: stream-state jump table pattern not found");
+            return src;
+        }
+
+        src = src.Replace(needle, replacement, StringComparison.Ordinal);
+
+        src = ReplaceOnce(src,
+            """
+                    goto L80013324;
+                    c.S3 = 0x80070000u;
+                    c.S3 = c.S3 - 0x7DB4u;
+                    c.V0 = m.ReadU32(c.S3);
+            """,
+            """
+                    goto L80013324;
+                    L800133AC: ;
+                    c.S3 = 0x80070000u;
+                    c.S3 = c.S3 - 0x7DB4u;
+                    c.V0 = m.ReadU32(c.S3);
+            """);
+
+        src = ReplaceOnce(src,
+            """
+                    c.S0 = c.S1 + 0u;
+                    goto L80013324;
+                    c.V0 = m.ReadU32((c.GP + 0x28u));
+                    if (c.V0 == 0u) {
+                        goto L800134EC;
+                    }
+            """,
+            """
+                    c.S0 = c.S1 + 0u;
+                    goto L80013324;
+                    L80013440: ;
+                    c.V0 = m.ReadU32((c.GP + 0x28u));
+                    if (c.V0 == 0u) {
+                        goto L800134EC;
+                    }
+            """);
+
+        src = ReplaceOnce(src,
+            """
+                    goto L800137AC;
+                    c.V0 = 0u | 0x0001u;
+                    m.WriteU16((c.S0 + 0x4u), (ushort)c.V0);
+                    m.WriteU8((c.S0 + 0xFu), (byte)0u);
+                    L800137AC: ;
+            """,
+            """
+                    goto L800137AC;
+                    L800137A0: ;
+                    c.V0 = 0u | 0x0001u;
+                    m.WriteU16((c.S0 + 0x4u), (ushort)c.V0);
+                    m.WriteU8((c.S0 + 0xFu), (byte)0u);
+                    L800137AC: ;
+            """);
+
+        Console.WriteLine("[post-pass] applied stream-state jump table fix (func_80013304)");
+        return src;
+    }
+
+    /// <summary>
+    /// NSD entry-type jump table @ 0x80010120 inside func_800126BC (6 entries, 4 targets).
+    /// </summary>
+    static string FixEntryTypeJumpTable(string src)
+    {
+        if (src.Contains("L80012748:", StringComparison.Ordinal))
+            return src;
+
+        const string needle =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x120u));
+                    Dispatcher.Call(c, m, c.V0);
+                    return;
+                    c.A1 = m.ReadU32(c.S1);
+                    c.V0 = m.ReadU32((c.A1 + 0x10u));
+                    c.V0 = m.ReadU32((c.V0 + 0x4u));
+                    c.V1 = 0x80060000u;
+                    c.V1 = m.ReadU32((c.V1 + 0x7828u));
+                    c.A0 = m.ReadU32((c.A1 + 0x8u));
+            """;
+
+        const string replacement =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x120u));
+                    // SCES-00967: entry-type jump table @ 0x80010120 → mid-function cases
+                    switch (c.V0)
+                    {
+                        case 0x80012748u: goto L80012748;
+                        case 0x8001282Cu: goto L8001282C;
+                        case 0x80012940u: goto L80012940;
+                        case 0x80012AB0u: goto L80012AB0;
+                        default:
+                            Dispatcher.Call(c, m, c.V0);
+                            return;
+                    }
+                    L80012748: ;
+                    c.A1 = m.ReadU32(c.S1);
+                    c.V0 = m.ReadU32((c.A1 + 0x10u));
+                    c.V0 = m.ReadU32((c.V0 + 0x4u));
+                    c.V1 = 0x80060000u;
+                    c.V1 = m.ReadU32((c.V1 + 0x7828u));
+                    c.A0 = m.ReadU32((c.A1 + 0x8u));
+            """;
+
+        if (!src.Contains(needle, StringComparison.Ordinal))
+        {
+            Console.WriteLine("[post-pass] warning: entry-type jump table pattern not found");
+            return src;
+        }
+
+        src = src.Replace(needle, replacement, StringComparison.Ordinal);
+
+        src = ReplaceOnce(src,
+            """
+                    goto L80012AB0;
+                    c.A0 = m.ReadU32((c.S1 + 0x18u));
+                    c.RA = 0x80012838u;
+                    CrashBandicoot2.func_8001398C(c, m);
+            """,
+            """
+                    goto L80012AB0;
+                    L8001282C: ;
+                    c.A0 = m.ReadU32((c.S1 + 0x18u));
+                    c.RA = 0x80012838u;
+                    CrashBandicoot2.func_8001398C(c, m);
+            """);
+
+        src = ReplaceOnce(src,
+            """
+                    goto L80012ABC;
+                    c.A1 = m.ReadU32(c.S1);
+                    c.V0 = m.ReadU32((c.A1 + 0x10u));
+                    c.V0 = m.ReadU32((c.V0 + 0x4u));
+                    c.V1 = 0x80060000u;
+                    c.V1 = m.ReadU32((c.V1 + 0x7828u));
+                    c.S4 = m.ReadU32((c.S1 + 0x24u));
+            """,
+            """
+                    goto L80012ABC;
+                    L80012940: ;
+                    c.A1 = m.ReadU32(c.S1);
+                    c.V0 = m.ReadU32((c.A1 + 0x10u));
+                    c.V0 = m.ReadU32((c.V0 + 0x4u));
+                    c.V1 = 0x80060000u;
+                    c.V1 = m.ReadU32((c.V1 + 0x7828u));
+                    c.S4 = m.ReadU32((c.S1 + 0x24u));
+            """);
+
+        Console.WriteLine("[post-pass] applied entry-type jump table fix (func_800126BC)");
+        return src;
+    }
+
+    /// <summary>
+    /// Game-mode dispatch jump table @ 0x80010480 inside func_80026F14 (11 entries).
+    /// Hit after PresentPump / first large NSD page-ins.
+    /// </summary>
+    static string FixGameModeJumpTable(string src)
+    {
+        if (src.Contains("L800270B8:", StringComparison.Ordinal))
+            return src;
+
+        const string needle =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x480u));
+                    Dispatcher.Call(c, m, c.V0);
+                    return;
+                    c.A0 = c.S0 + 0u;
+                    c.A1 = c.S1 + 0u;
+                    c.RA = 0x800270C4u;
+                    CrashBandicoot2.func_80022978(c, m);
+                    c.V0 = 0u | 0x0001u;
+                    goto L80027150;
+                    c.A0 = c.S0 + 0u;
+                    c.RA = 0x800270D4u;
+                    CrashBandicoot2.func_80022AD4(c, m);
+                    c.V0 = 0u | 0x0001u;
+                    goto L80027150;
+                    c.A0 = c.S0 + 0u;
+                    c.A1 = c.S1 + 0u;
+                    c.RA = 0x800270E8u;
+                    CrashBandicoot2.func_80021C64(c, m);
+                    c.V0 = 0u | 0x0001u;
+                    goto L80027150;
+                    c.A0 = c.S0 + 0u;
+                    c.A1 = c.S1 + 0u;
+                    c.RA = 0x800270FCu;
+                    CrashBandicoot2.func_800221A8(c, m);
+                    c.V0 = 0u | 0x0001u;
+                    goto L80027150;
+                    c.A0 = c.S0 + 0u;
+                    c.A1 = c.S1 + 0u;
+                    c.RA = 0x80027110u;
+                    CrashBandicoot2.func_80022570(c, m);
+                    c.V0 = 0u | 0x0001u;
+                    goto L80027150;
+                    c.A0 = c.S0 + 0u;
+                    c.A1 = c.S1 + 0u;
+                    c.RA = 0x80027124u;
+                    CrashBandicoot2.func_8002281C(c, m);
+                    c.V0 = 0u | 0x0001u;
+                    goto L80027150;
+                    L8002712C: ;
+            """;
+
+        const string replacement =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x480u));
+                    // SCES-00967: game-mode jump table @ 0x80010480 → mid-function cases
+                    switch (c.V0)
+                    {
+                        case 0x800270B8u: goto L800270B8;
+                        case 0x800270CCu: goto L800270CC;
+                        case 0x800270DCu: goto L800270DC;
+                        case 0x800270F0u: goto L800270F0;
+                        case 0x80027104u: goto L80027104;
+                        case 0x80027118u: goto L80027118;
+                        case 0x8002712Cu: goto L8002712C;
+                        default:
+                            Dispatcher.Call(c, m, c.V0);
+                            return;
+                    }
+                    L800270B8: ;
+                    c.A0 = c.S0 + 0u;
+                    c.A1 = c.S1 + 0u;
+                    c.RA = 0x800270C4u;
+                    CrashBandicoot2.func_80022978(c, m);
+                    c.V0 = 0u | 0x0001u;
+                    goto L80027150;
+                    L800270CC: ;
+                    c.A0 = c.S0 + 0u;
+                    c.RA = 0x800270D4u;
+                    CrashBandicoot2.func_80022AD4(c, m);
+                    c.V0 = 0u | 0x0001u;
+                    goto L80027150;
+                    L800270DC: ;
+                    c.A0 = c.S0 + 0u;
+                    c.A1 = c.S1 + 0u;
+                    c.RA = 0x800270E8u;
+                    CrashBandicoot2.func_80021C64(c, m);
+                    c.V0 = 0u | 0x0001u;
+                    goto L80027150;
+                    L800270F0: ;
+                    c.A0 = c.S0 + 0u;
+                    c.A1 = c.S1 + 0u;
+                    c.RA = 0x800270FCu;
+                    CrashBandicoot2.func_800221A8(c, m);
+                    c.V0 = 0u | 0x0001u;
+                    goto L80027150;
+                    L80027104: ;
+                    c.A0 = c.S0 + 0u;
+                    c.A1 = c.S1 + 0u;
+                    c.RA = 0x80027110u;
+                    CrashBandicoot2.func_80022570(c, m);
+                    c.V0 = 0u | 0x0001u;
+                    goto L80027150;
+                    L80027118: ;
+                    c.A0 = c.S0 + 0u;
+                    c.A1 = c.S1 + 0u;
+                    c.RA = 0x80027124u;
+                    CrashBandicoot2.func_8002281C(c, m);
+                    c.V0 = 0u | 0x0001u;
+                    goto L80027150;
+                    L8002712C: ;
+            """;
+
+        if (!src.Contains(needle, StringComparison.Ordinal))
+        {
+            Console.WriteLine("[post-pass] warning: game-mode jump table pattern not found");
+            return src;
+        }
+
+        src = src.Replace(needle, replacement, StringComparison.Ordinal);
+        Console.WriteLine("[post-pass] applied game-mode jump table fix (func_80026F14)");
+        return src;
+    }
+
+    /// <summary>
+    /// Camera/interp mode jump table @ 0x80010438 inside func_80023D78
+    /// (11 entries, only 2 distinct targets: interpolate vs raw).
+    /// </summary>
+    static string FixCamInterpJumpTable(string src)
+    {
+        if (src.Contains("L80023F40:", StringComparison.Ordinal))
+            return src;
+
+        const string needle =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x438u));
+                    Dispatcher.Call(c, m, c.V0);
+                    return;
+                    c.V0 = (uint)(short)m.ReadU16(c.A0);
+                    c.V1 = (uint)(short)m.ReadU16((c.A0 + 0x2u));
+                    c.A1 = m.ReadU32((c.S2 + 0xCu));
+                    c.A3 = c.V0 << 8;
+                    if (c.A1 == 0u) {
+                        c.A2 = c.V1 << 8;
+                        goto L80023FBC;
+                    }
+            """;
+
+        const string replacement =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x438u));
+                    // SCES-00967: cam-interp jump table @ 0x80010438 → mid-function cases
+                    switch (c.V0)
+                    {
+                        case 0x80023F40u: goto L80023F40;
+                        case 0x80023FACu: goto L80023FAC;
+                        default:
+                            Dispatcher.Call(c, m, c.V0);
+                            return;
+                    }
+                    L80023F40: ;
+                    c.V0 = (uint)(short)m.ReadU16(c.A0);
+                    c.V1 = (uint)(short)m.ReadU16((c.A0 + 0x2u));
+                    c.A1 = m.ReadU32((c.S2 + 0xCu));
+                    c.A3 = c.V0 << 8;
+                    if (c.A1 == 0u) {
+                        c.A2 = c.V1 << 8;
+                        goto L80023FBC;
+                    }
+            """;
+
+        if (!src.Contains(needle, StringComparison.Ordinal))
+        {
+            Console.WriteLine("[post-pass] warning: cam-interp jump table pattern not found");
+            return src;
+        }
+
+        src = src.Replace(needle, replacement, StringComparison.Ordinal);
+        Console.WriteLine("[post-pass] applied cam-interp jump table fix (func_80023D78)");
+        return src;
+    }
+
+    /// <summary>
+    /// Pad/input mode jump table @ 0x80010668 inside func_800347D4 (5 entries).
+    /// </summary>
+    static string FixPadModeJumpTable(string src)
+    {
+        if (src.Contains("L80034818:", StringComparison.Ordinal))
+            return src;
+
+        const string needle =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x668u));
+                    Dispatcher.Call(c, m, c.V0);
+                    return;
+                    c.A0 = (uint)(short)m.ReadU16((c.GP + 0x268u));
+                    c.A1 = (uint)(short)m.ReadU16(c.S0);
+                    c.A2 = 0u | 0x0001u;
+                    c.A3 = c.A3 << 16;
+                    c.A3 = (uint)((int)c.A3 >> 16);
+                    c.V0 = 0u | 0x0001u;
+                    m.WriteU32((c.S0 + 0x4u), c.V0);
+                    c.RA = 0x80034838u;
+                    CrashBandicoot2.func_80054BD0(c, m);
+            """;
+
+        const string replacement =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x668u));
+                    // SCES-00967: pad-mode jump table @ 0x80010668 → mid-function cases
+                    switch (c.V0)
+                    {
+                        case 0x80034818u: goto L80034818;
+                        case 0x80034840u: goto L80034840;
+                        case 0x8003485Cu: goto L8003485C;
+                        case 0x80034874u: goto L80034874;
+                        case 0x80034890u: goto L80034890;
+                        default:
+                            Dispatcher.Call(c, m, c.V0);
+                            return;
+                    }
+                    L80034818: ;
+                    c.A0 = (uint)(short)m.ReadU16((c.GP + 0x268u));
+                    c.A1 = (uint)(short)m.ReadU16(c.S0);
+                    c.A2 = 0u | 0x0001u;
+                    c.A3 = c.A3 << 16;
+                    c.A3 = (uint)((int)c.A3 >> 16);
+                    c.V0 = 0u | 0x0001u;
+                    m.WriteU32((c.S0 + 0x4u), c.V0);
+                    c.RA = 0x80034838u;
+                    CrashBandicoot2.func_80054BD0(c, m);
+            """;
+
+        if (!src.Contains(needle, StringComparison.Ordinal))
+        {
+            Console.WriteLine("[post-pass] warning: pad-mode jump table pattern not found");
+            return src;
+        }
+
+        src = src.Replace(needle, replacement, StringComparison.Ordinal);
+
+        src = ReplaceOnce(src,
+            """
+                    goto L800348D4;
+                    c.A0 = (uint)(short)m.ReadU16((c.GP + 0x268u));
+                    c.A1 = (uint)(short)m.ReadU16(c.S0);
+                    c.V0 = 0u | 0x0002u;
+                    m.WriteU32((c.S0 + 0x4u), c.V0);
+                    c.RA = 0x80034854u;
+                    CrashBandicoot2.func_8005659C(c, m);
+            """,
+            """
+                    goto L800348D4;
+                    L80034840: ;
+                    c.A0 = (uint)(short)m.ReadU16((c.GP + 0x268u));
+                    c.A1 = (uint)(short)m.ReadU16(c.S0);
+                    c.V0 = 0u | 0x0002u;
+                    m.WriteU32((c.S0 + 0x4u), c.V0);
+                    c.RA = 0x80034854u;
+                    CrashBandicoot2.func_8005659C(c, m);
+            """);
+
+        src = ReplaceOnce(src,
+            """
+                    goto L800348D4;
+                    c.A0 = (uint)(short)m.ReadU16((c.GP + 0x268u));
+                    c.A1 = (uint)(short)m.ReadU16(c.S0);
+                    m.WriteU32((c.S0 + 0x4u), 0u);
+                    c.RA = 0x8003486Cu;
+                    CrashBandicoot2.func_80054B6C(c, m);
+            """,
+            """
+                    goto L800348D4;
+                    L8003485C: ;
+                    c.A0 = (uint)(short)m.ReadU16((c.GP + 0x268u));
+                    c.A1 = (uint)(short)m.ReadU16(c.S0);
+                    m.WriteU32((c.S0 + 0x4u), 0u);
+                    c.RA = 0x8003486Cu;
+                    CrashBandicoot2.func_80054B6C(c, m);
+            """);
+
+        src = ReplaceOnce(src,
+            """
+                    goto L800348D4;
+                    c.A0 = (uint)(short)m.ReadU16((c.GP + 0x268u));
+                    c.A1 = (uint)(short)m.ReadU16(c.S0);
+                    c.V0 = 0u | 0x0001u;
+                    m.WriteU32((c.S0 + 0x4u), c.V0);
+                    c.RA = 0x80034888u;
+                    CrashBandicoot2.func_80054CCC(c, m);
+            """,
+            """
+                    goto L800348D4;
+                    L80034874: ;
+                    c.A0 = (uint)(short)m.ReadU16((c.GP + 0x268u));
+                    c.A1 = (uint)(short)m.ReadU16(c.S0);
+                    c.V0 = 0u | 0x0001u;
+                    m.WriteU32((c.S0 + 0x4u), c.V0);
+                    c.RA = 0x80034888u;
+                    CrashBandicoot2.func_80054CCC(c, m);
+            """);
+
+        src = ReplaceOnce(src,
+            """
+                    goto L800348D4;
+                    c.V1 = (uint)(short)m.ReadU16((c.GP + 0x17Cu));
+                    c.S1 = 0u + 0u;
+                    c.V0 = (uint)((int)c.A3 >> 16);
+                    m.WriteU16((c.S0 + 0x10u), (ushort)c.V0);
+            """,
+            """
+                    goto L800348D4;
+                    L80034890: ;
+                    c.V1 = (uint)(short)m.ReadU16((c.GP + 0x17Cu));
+                    c.S1 = 0u + 0u;
+                    c.V0 = (uint)((int)c.A3 >> 16);
+                    m.WriteU16((c.S0 + 0x10u), (ushort)c.V0);
+            """);
+
+        Console.WriteLine("[post-pass] applied pad-mode jump table fix (func_800347D4)");
         return src;
     }
 

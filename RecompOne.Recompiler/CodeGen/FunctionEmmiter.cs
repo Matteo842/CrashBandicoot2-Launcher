@@ -64,6 +64,13 @@ public static class FunctionEmitter
         if (ctx.Debug)
             sb.AppendLine($"        System.Console.WriteLine(\"{func.EmittedName} @ {func.OverlayName} @ 0x{func.Start:X8}\");");
 
+        // Body may include pre-entry trampolines (lower VRAM than func.Start).
+        if (instrs.Length > 0 && instrs[0].Vram != func.Start)
+        {
+            ctx.Labels.Add(func.Start);
+            sb.AppendLine($"        goto L{func.Start:X8};");
+        }
+
         for (int i = 0; i < instrs.Length; i++)
         {
             if (dsIdx.Contains(i)) continue;
