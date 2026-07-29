@@ -21,8 +21,190 @@ public static class PostPassApplier
         patched = FixGameModeJumpTable(patched);
         patched = FixCamInterpJumpTable(patched);
         patched = FixPadModeJumpTable(patched);
+        patched = FixLevelAudioJumpTable(patched);
+        patched = FixTexDecompBulkCopy(patched);
+        patched = FixPolyRasterContinuations(patched);
+        patched = FixGoolFallthrough38D94(patched);
+        patched = FixGoolFallthroughMidEntries(patched);
+        patched = FixGoolNativeCdahS0(patched);
+        // Matrix mid-entries (444CC/44514/445CC/44324) are applied in-tree on main.cs for
+        // Pipeline 30+; fold into a dedicated fixer before the next full MIPS recomp.
         if (!ReferenceEquals(src, patched) && patched != src)
             File.WriteAllText(mainCsPath, patched);
+
+        // Entry.cs: prefer MIPS interp for unmapped mid-entries (C# labels often VA-skewed).
+        // Do not RegisterRange over the GOOL helper mega-fn.
+    }
+
+    /// <summary>
+    /// Intro NSF GOOL opcode-49 native at VA 0x8010DDB0 (CdahS). Not in main EXE —
+    /// register HLE so Dispatcher.Call(S5) resolves after NSF page-in.
+    /// </summary>
+    static string FixGoolNativeCdahS0(string src)
+    {
+        if (src.Contains("[0x8010DDB0u]", StringComparison.Ordinal))
+            return src;
+
+        const string needle = "[0x80038D94u] = CrashBandicoot2.func_80038D94,";
+        const string alt = "[0x80037930u] = CrashBandicoot2.func_80037930,";
+        const string entry = "[0x8010DDB0u] = RecompOne.Runtime.Sdk.LibGool.NativeCdahS0,";
+
+        if (src.Contains(needle, StringComparison.Ordinal))
+            src = src.Replace(needle, needle + "\n            " + entry, StringComparison.Ordinal);
+        else if (src.Contains(alt, StringComparison.Ordinal))
+            src = src.Replace(alt, alt + "\n            " + entry, StringComparison.Ordinal);
+        else
+        {
+            Console.WriteLine("[post-pass] warning: could not inject GOOL native 0x8010DDB0 map entry");
+            return src;
+        }
+
+        Console.WriteLine("[post-pass] registered GOOL native HLE @ 0x8010DDB0 (CdahS)");
+        return src;
+    }
+
+    /// <summary>
+    /// After func_80037930's epilogue @ L80038D78, a helper was left as dead fallthrough.
+    /// Callers hit 0x80038D94 unmapped. Expose as alternate entry.
+    /// </summary>
+    static string FixGoolFallthrough38D94(string src)
+    {
+        if (src.Contains("func_80037930_entry", StringComparison.Ordinal) ||
+            src.Contains("[0x80038D94u]", StringComparison.Ordinal))
+            return src;
+
+        src = src.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        src = ReplaceOnce(src,
+            """
+                    c.SP = c.SP + 0x80u;
+                    return;
+                    c.SP = c.SP - 0x48u;
+                    m.WriteU32((c.SP + 0x20u), c.S0);
+            """,
+            """
+                    c.SP = c.SP + 0x80u;
+                    return;
+                    L80038D94: ;
+                    c.SP = c.SP - 0x48u;
+                    m.WriteU32((c.SP + 0x20u), c.S0);
+            """);
+
+        const string hdr = "    public static void func_80037930(CpuContext c, IMemory m)\n    {\n";
+        var hi = src.IndexOf(hdr, StringComparison.Ordinal);
+        if (hi < 0)
+        {
+            Console.WriteLine("[post-pass] warning: func_80037930 header not found for 38D94 fix");
+            return src;
+        }
+        var after = hi + hdr.Length;
+        var eol = src.IndexOf('\n', after);
+        var firstBody = src[after..eol];
+
+        var replacement =
+            "    public static void func_80037930(CpuContext c, IMemory m) => func_80037930_entry(c, m, 0x80037930u);\n" +
+            "    public static void func_80038D94(CpuContext c, IMemory m) => func_80037930_entry(c, m, 0x80038D94u);\n" +
+            "    static void func_80037930_entry(CpuContext c, IMemory m, uint entry)\n" +
+            "    {\n" +
+            "        // SCES-00967: GOOL helper mid-entry (fallthrough after epilogue)\n" +
+            "        switch (entry)\n" +
+            "        {\n" +
+            "            case 0x80038D94u: goto L80038D94;\n" +
+            "        }\n" +
+            firstBody;
+
+        src = string.Concat(src.AsSpan(0, hi), replacement, src.AsSpan(eol));
+
+        src = src.Replace(
+            "[0x80037930u] = CrashBandicoot2.func_80037930,",
+            "[0x80037930u] = CrashBandicoot2.func_80037930,\n            [0x80038D94u] = CrashBandicoot2.func_80038D94,",
+            StringComparison.Ordinal);
+
+        Console.WriteLine("[post-pass] applied GOOL fallthrough mid-entry fix (0x80038D94)");
+        return src;
+    }
+
+    /// <summary>
+    /// Extra stacked helpers between func_80037930 epilogues and func_800390AC.
+    /// Requires existing func_80037930_entry (from FixGoolFallthrough38D94 / prior pipeline).
+    /// </summary>
+    static string FixGoolFallthroughMidEntries(string src)
+    {
+        if (!src.Contains("func_80037930_entry", StringComparison.Ordinal))
+            return src;
+
+        src = src.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        // (label, fallthrough probe just after an epilogue return)
+        (string Addr, string Probe)[] entries =
+        [
+            ("80038414", "c.SP = c.SP - 0x88u;"),
+            ("80038998", "c.SP = c.SP - 0x80u;"),
+            ("80038EAC", "c.SP = c.SP - 0x20u;"),
+            ("80038FA4", "c.SP = c.SP - 0x20u;"),
+        ];
+
+        var added = 0;
+        foreach (var (addr, probe) in entries)
+        {
+            var lab = $"L{addr}";
+            var fn = $"func_{addr}";
+            var hex = $"0x{addr}";
+
+            if (!src.Contains($"{lab}:", StringComparison.Ordinal))
+            {
+                // Prefer the first unlabeled fallthrough matching the probe after a return.
+                var marked = $"        return;\n        {lab}: ;\n        {probe}";
+                var plain = $"        return;\n        {probe}";
+                if (src.Contains(plain, StringComparison.Ordinal) &&
+                    !src.Contains(marked, StringComparison.Ordinal))
+                {
+                    src = ReplaceOnce(src, plain, marked);
+                }
+            }
+
+            if (!src.Contains($"public static void {fn}(", StringComparison.Ordinal) &&
+                src.Contains("public static void func_80038D94(", StringComparison.Ordinal))
+            {
+                src = src.Replace(
+                    "    public static void func_80038D94(CpuContext c, IMemory m) => func_80037930_entry(c, m, 0x80038D94u);\n",
+                    $"    public static void func_80038D94(CpuContext c, IMemory m) => func_80037930_entry(c, m, 0x80038D94u);\n" +
+                    $"    public static void {fn}(CpuContext c, IMemory m) => func_80037930_entry(c, m, {hex}u);\n",
+                    StringComparison.Ordinal);
+            }
+
+            if (!src.Contains($"case {hex}u:", StringComparison.Ordinal) &&
+                src.Contains("case 0x80038D94u:", StringComparison.Ordinal))
+            {
+                src = src.Replace(
+                    "            case 0x80038D94u: goto L80038D94;\n",
+                    $"            case 0x80038D94u: goto L80038D94;\n            case {hex}u: goto {lab};\n",
+                    StringComparison.Ordinal);
+            }
+
+            if (!src.Contains($"[{hex}u]", StringComparison.Ordinal) &&
+                src.Contains("[0x80038D94u] = CrashBandicoot2.func_80038D94,", StringComparison.Ordinal))
+            {
+                src = src.Replace(
+                    "[0x80038D94u] = CrashBandicoot2.func_80038D94,",
+                    $"[0x80038D94u] = CrashBandicoot2.func_80038D94,\n            [{hex}u] = CrashBandicoot2.{fn},",
+                    StringComparison.Ordinal);
+                added++;
+            }
+            else if (!src.Contains($"[{hex}u]", StringComparison.Ordinal) &&
+                     src.Contains("[0x80037930u] = CrashBandicoot2.func_80037930,", StringComparison.Ordinal))
+            {
+                src = src.Replace(
+                    "[0x80037930u] = CrashBandicoot2.func_80037930,",
+                    $"[0x80037930u] = CrashBandicoot2.func_80037930,\n            [{hex}u] = CrashBandicoot2.{fn},",
+                    StringComparison.Ordinal);
+                added++;
+            }
+        }
+
+        if (added > 0)
+            Console.WriteLine($"[post-pass] applied GOOL fallthrough mid-entries (+{added} map hooks)");
+        return src;
     }
 
     /// <summary>
@@ -1290,6 +1472,386 @@ public static class PostPassApplier
             """);
 
         Console.WriteLine("[post-pass] applied pad-mode jump table fix (func_800347D4)");
+        return src;
+    }
+
+    /// <summary>
+    /// Per-level audio/id jump table @ 0x800105D0 inside func_80034034 (0x26 entries,
+    /// 4 unique mid-function targets). Hit when leaving title into Intro (0x1C).
+    /// </summary>
+    static string FixLevelAudioJumpTable(string src)
+    {
+        if (src.Contains("L800340B8:", StringComparison.Ordinal))
+            return src;
+
+        const string needle =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x5D0u));
+                    Dispatcher.Call(c, m, c.V0);
+                    return;
+                    c.V0 = 0u | 0x0012u;
+                    goto L800340D4;
+                    c.V0 = 0u | 0x0011u;
+                    goto L800340D4;
+                    c.V0 = 0u | 0x000Cu;
+                    goto L800340D4;
+                    L800340D0: ;
+                    c.V0 = 0u | 0x0010u;
+            """;
+
+        const string replacement =
+            """
+                    c.V0 = m.ReadU32((c.At + 0x5D0u));
+                    // SCES-00967: level-audio jump table @ 0x800105D0 → mid-function cases
+                    switch (c.V0)
+                    {
+                        case 0x800340B8u: goto L800340B8;
+                        case 0x800340C0u: goto L800340C0;
+                        case 0x800340C8u: goto L800340C8;
+                        case 0x800340D0u: goto L800340D0;
+                        default:
+                            Dispatcher.Call(c, m, c.V0);
+                            return;
+                    }
+                    L800340B8: ;
+                    c.V0 = 0u | 0x0012u;
+                    goto L800340D4;
+                    L800340C0: ;
+                    c.V0 = 0u | 0x0011u;
+                    goto L800340D4;
+                    L800340C8: ;
+                    c.V0 = 0u | 0x000Cu;
+                    goto L800340D4;
+                    L800340D0: ;
+                    c.V0 = 0u | 0x0010u;
+            """;
+
+        if (!src.Contains(needle, StringComparison.Ordinal))
+        {
+            Console.WriteLine("[post-pass] warning: level-audio jump table pattern not found");
+            return src;
+        }
+
+        src = src.Replace(needle, replacement, StringComparison.Ordinal);
+        Console.WriteLine("[post-pass] applied level-audio jump table fix (func_80034034)");
+        return src;
+    }
+
+    /// <summary>
+    /// Texture decompressors func_8003B0EC / func_8003B4E4 share a Duff-device bulk-copy
+    /// tail @ 0x8003B910. Cross-function branches become Dispatcher.Call+return; the
+    /// unrolled jr targets are empty stubs. Replace with a plain halfword copy + continue.
+    /// </summary>
+    static string FixTexDecompBulkCopy(string src)
+    {
+        if (src.Contains("Shared bulk-copy tail @ 0x8003B910", StringComparison.Ordinal) ||
+            src.Contains("Bypass broken Duff-device tail @ L8003B910", StringComparison.Ordinal))
+            return src;
+
+        const string needleB0 =
+            """
+                    c.A3 = (int)c.At < 2 ? 1u : 0u;
+                    if (c.A3 == 0u) {
+                        Dispatcher.Call(c, m, 0x8003B910u);
+                        return;
+                    }
+            """;
+
+        const string fixB0 =
+            """
+                    c.A3 = (int)c.At < 2 ? 1u : 0u;
+                    if (c.A3 == 0u) {
+                        // Shared bulk-copy tail @ 0x8003B910 lives in func_8003B4E4; branch was
+                        // emitted as Dispatcher.Call+return (wrong). Inline halfword copy + continue.
+                        c.V0 = c.V0 + c.At;
+                        c.V1 = c.V1 + c.At;
+                        {
+                            uint n = c.At;
+                            while (n != 0u)
+                            {
+                                ushort h = m.ReadU16(c.T6);
+                                c.T6 = c.T6 + 0x2u;
+                                m.WriteU16(c.S1, h);
+                                c.S1 = c.S1 + 0x2u;
+                                n--;
+                            }
+                        }
+                        goto L8003B38C;
+                    }
+            """;
+
+        const string needleB4 =
+            """
+                    c.A3 = (int)c.At < 2 ? 1u : 0u;
+                    if (c.A3 == 0u) {
+                        goto L8003B910;
+                    }
+            """;
+
+        const string fixB4 =
+            """
+                    c.A3 = (int)c.At < 2 ? 1u : 0u;
+                    if (c.A3 == 0u) {
+                        // Bypass broken Duff-device tail @ L8003B910 (jr into mid-function + empty stubs).
+                        c.V0 = c.V0 + c.At;
+                        c.V1 = c.V1 + c.At;
+                        {
+                            uint n = c.At;
+                            while (n != 0u)
+                            {
+                                ushort h = m.ReadU16(c.T6);
+                                c.T6 = c.T6 + 0x2u;
+                                m.WriteU16(c.S1, h);
+                                c.S1 = c.S1 + 0x2u;
+                                n--;
+                            }
+                        }
+                        goto L8003B710;
+                    }
+            """;
+
+        bool any = false;
+        if (src.Contains(needleB0, StringComparison.Ordinal))
+        {
+            src = src.Replace(needleB0, fixB0, StringComparison.Ordinal);
+            any = true;
+        }
+        else
+            Console.WriteLine("[post-pass] warning: tex-decomp B0EC bulk-copy pattern not found");
+
+        if (src.Contains(needleB4, StringComparison.Ordinal))
+        {
+            src = src.Replace(needleB4, fixB4, StringComparison.Ordinal);
+            any = true;
+        }
+        else
+            Console.WriteLine("[post-pass] warning: tex-decomp B4E4 bulk-copy pattern not found");
+
+        if (any)
+            Console.WriteLine("[post-pass] applied tex-decomp bulk-copy fix (func_8003B0EC/B4E4)");
+        return src;
+    }
+
+    /// <summary>
+    /// Poly rasterizer <c>func_800420F4</c> was split: mode fragments (42D50, 43E0C, …)
+    /// do MIPS <c>j</c> into mid-labels (42938 / 42AB0 / 426B8 / 427E0 / …). Those were
+    /// emitted as <c>Dispatcher.Call</c>+return → unmapped. Convert fragment jumps into
+    /// <see cref="RecompOne.Runtime.Dispatch.RasterContinue"/> tokens and catch them at
+    /// the parent's jalr sites so control resumes via goto (flat stack).
+    /// </summary>
+    static string FixPolyRasterContinuations(string src)
+    {
+        if (src.Contains("// SCES-00967: poly-raster continuations", StringComparison.Ordinal))
+            return src;
+
+        // Generated main.cs may be CRLF on Windows; normalize so raw-string needles match.
+        src = src.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        // Mid-entry labels inside func_800420F4 (were fallthrough after jalr/jr).
+        // Marker must stay — used as idempotency guard.
+        src = src.Replace(
+            "    public static void func_800420F4(CpuContext c, IMemory m)\n    {",
+            "    public static void func_800420F4(CpuContext c, IMemory m)\n    {\n        // SCES-00967: poly-raster continuations",
+            StringComparison.Ordinal);
+
+        src = ReplaceOnce(src,
+            """
+                    c.SP = c.SP + 0x44u;
+                    return;
+                    RecompOne.Runtime.Gte.Execute(0x4A280030u);
+            """,
+            """
+                    c.SP = c.SP + 0x44u;
+                    return;
+                    L800426B8: ;
+                    RecompOne.Runtime.Gte.Execute(0x4A280030u);
+            """);
+
+        src = ReplaceOnce(src,
+            """
+                    L800427D8: ;
+                    c.V0 = c.V0 + c.FP;
+                    Dispatcher.Call(c, m, c.A2);
+                    return;
+                    c.T8 = c.S5 << 20;
+            """,
+            """
+                    L800427D8: ;
+                    c.V0 = c.V0 + c.FP;
+                    Dispatcher.Call(c, m, c.A2);
+                    {
+                        uint _rc = RecompOne.Runtime.Dispatch.RasterContinue.Take();
+                        if (_rc != 0u)
+                        {
+                            switch (_rc)
+                            {
+                                case 0x80042628u: goto L80042628;
+                                case 0x800426B8u: goto L800426B8;
+                                case 0x800427E0u: goto L800427E0;
+                                case 0x80042938u: goto L80042938;
+                                case 0x80042AB0u: goto L80042AB0;
+                                case 0x80042BE0u: goto L80042BE0;
+                                default: throw new InvalidOperationException($"unhandled raster continue: 0x{_rc:X8}");
+                            }
+                        }
+                    }
+                    return;
+                    L800427E0: ;
+                    c.T8 = c.S5 << 20;
+            """);
+
+        src = ReplaceOnce(src,
+            """
+                    if ((int)0u >= 0) {
+                        c.T9 = 0x09000000u;
+                        goto L80042BE0;
+                    }
+                    c.T9 = 0x09000000u;
+                    m.WriteU32((c.V1 + 0x1B4u), RecompOne.Runtime.Gte.StoreWord(0));
+            """,
+            """
+                    if ((int)0u >= 0) {
+                        c.T9 = 0x09000000u;
+                        goto L80042BE0;
+                    }
+                    L80042938: ;
+                    c.T9 = 0x09000000u;
+                    m.WriteU32((c.V1 + 0x1B4u), RecompOne.Runtime.Gte.StoreWord(0));
+            """);
+
+        src = ReplaceOnce(src,
+            """
+                    L80042AA8: ;
+                    c.V0 = c.V0 + c.FP;
+                    Dispatcher.Call(c, m, c.A2);
+                    return;
+                    c.T8 = c.S5 << 20;
+            """,
+            """
+                    L80042AA8: ;
+                    c.V0 = c.V0 + c.FP;
+                    Dispatcher.Call(c, m, c.A2);
+                    {
+                        uint _rc = RecompOne.Runtime.Dispatch.RasterContinue.Take();
+                        if (_rc != 0u)
+                        {
+                            switch (_rc)
+                            {
+                                case 0x80042628u: goto L80042628;
+                                case 0x800426B8u: goto L800426B8;
+                                case 0x800427E0u: goto L800427E0;
+                                case 0x80042938u: goto L80042938;
+                                case 0x80042AB0u: goto L80042AB0;
+                                case 0x80042BE0u: goto L80042BE0;
+                                default: throw new InvalidOperationException($"unhandled raster continue: 0x{_rc:X8}");
+                            }
+                        }
+                    }
+                    return;
+                    L80042AB0: ;
+                    c.T8 = c.S5 << 20;
+            """);
+
+        // Wrap jalr-via-T9 exits in func_800420F4 (four sites, each followed by a known label).
+        // Raw-string indent: content columns 20, closer at 12 → 8 spaces (matches main.cs).
+        var t9Sites = new (string Label, string Needle)[]
+        {
+            ("L800423E4",
+            """
+                    Dispatcher.Call(c, m, c.T9);
+                    return;
+                    L800423E4: ;
+            """),
+            ("L80042428",
+            """
+                    Dispatcher.Call(c, m, c.T9);
+                    return;
+                    L80042428: ;
+            """),
+            ("L8004254C",
+            """
+                    Dispatcher.Call(c, m, c.T9);
+                    return;
+                    L8004254C: ;
+            """),
+            ("L80042628",
+            """
+                    Dispatcher.Call(c, m, c.T9);
+                    return;
+                    L80042628: ;
+            """),
+        };
+
+        const string t9Catch =
+            """
+                    Dispatcher.Call(c, m, c.T9);
+                    {
+                        uint _rc = RecompOne.Runtime.Dispatch.RasterContinue.Take();
+                        if (_rc != 0u)
+                        {
+                            switch (_rc)
+                            {
+                                case 0x80042628u: goto L80042628;
+                                case 0x800426B8u: goto L800426B8;
+                                case 0x800427E0u: goto L800427E0;
+                                case 0x80042938u: goto L80042938;
+                                case 0x80042AB0u: goto L80042AB0;
+                                case 0x80042BE0u: goto L80042BE0;
+                                default: throw new InvalidOperationException($"unhandled raster continue: 0x{_rc:X8}");
+                            }
+                        }
+                    }
+                    return;
+            """;
+
+        int t9Count = 0;
+        foreach (var (label, needle) in t9Sites)
+        {
+            var fix = t9Catch + $"        {label}: ;\n";
+            if (!src.Contains(needle, StringComparison.Ordinal))
+            {
+                Console.WriteLine($"[post-pass] warning: raster T9 jalr site before {label} not found");
+                continue;
+            }
+            src = src.Replace(needle, fix, StringComparison.Ordinal);
+            t9Count++;
+        }
+
+        // Fragment j-targets → RasterContinue.Jump (same pattern everywhere).
+        foreach (var addr in new[]
+                 {
+                     "0x80042628u", "0x800426B8u", "0x800427E0u",
+                     "0x80042938u", "0x80042AB0u", "0x80042BE0u",
+                 })
+        {
+            var callNeedle = $"Dispatcher.Call(c, m, {addr});";
+            var jumpFix = $"RecompOne.Runtime.Dispatch.RasterContinue.Jump({addr});";
+            if (src.Contains(callNeedle, StringComparison.Ordinal))
+                src = src.Replace(callNeedle, jumpFix, StringComparison.Ordinal);
+        }
+
+        // jalr/indirect Call to mid-labels must resolve in the overlay map: stubs only
+        // set the continue token so the parent's Take() can goto the real label.
+        if (!src.Contains("[0x80042938u]", StringComparison.Ordinal))
+        {
+            const string mapNeedle = "[0x800420F4u] = CrashBandicoot2.func_800420F4,";
+            const string mapFix =
+                """
+                [0x800420F4u] = CrashBandicoot2.func_800420F4,
+                            [0x80042628u] = static (c, m) => RecompOne.Runtime.Dispatch.RasterContinue.Jump(0x80042628u),
+                            [0x800426B8u] = static (c, m) => RecompOne.Runtime.Dispatch.RasterContinue.Jump(0x800426B8u),
+                            [0x800427E0u] = static (c, m) => RecompOne.Runtime.Dispatch.RasterContinue.Jump(0x800427E0u),
+                            [0x80042938u] = static (c, m) => RecompOne.Runtime.Dispatch.RasterContinue.Jump(0x80042938u),
+                            [0x80042AB0u] = static (c, m) => RecompOne.Runtime.Dispatch.RasterContinue.Jump(0x80042AB0u),
+                            [0x80042BE0u] = static (c, m) => RecompOne.Runtime.Dispatch.RasterContinue.Jump(0x80042BE0u),
+                """;
+            if (!src.Contains(mapNeedle, StringComparison.Ordinal))
+                Console.WriteLine("[post-pass] warning: func_800420F4 dispatcher map entry not found");
+            else
+                src = src.Replace(mapNeedle, mapFix, StringComparison.Ordinal);
+        }
+
+        Console.WriteLine($"[post-pass] applied poly-raster continuation fix (func_800420F4 mid-entries; {t9Count} T9 jalr sites)");
         return src;
     }
 

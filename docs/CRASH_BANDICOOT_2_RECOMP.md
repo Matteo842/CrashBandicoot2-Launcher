@@ -3,7 +3,7 @@
 **Game (current dump):** Crash Bandicoot 2: Cortex Strikes Back (PAL)  
 **IDs:** `SCES-00967` / boot `SCES_009.67`  
 **Stack:** RecompOne static MIPS→C# + `RecompOne.Runtime`  
-**Status:** starfield intro visible; fixed BIOS `InitPAD`/`StartPAD` (try Cross/Start to advance). Next: if still stuck, NSF/GOOL cinematic stream.
+**Status:** title `0x3C` loads (world set, logo in RAM) but OT is starfield-only — title GOOL draw/input incomplete. HLE: Start/Cross on title sets mode→Intro `0x1C`. Try Enter/Z after rebuild.
 
 Lessons carried over from Crash 1 (SCUS-94900) — see that project's
 `docs/CRASH_BANDICOOT_RECOMP.md` for the full write-up.
@@ -50,7 +50,7 @@ NTSC-U would be `SCUS-94154` / `SCUS_941.54` — not targeted yet.
 | Window “Not Responding” | `HostWindow.KeepAlive`; LIBCD HLE; `PresentPump` on `80011E80` |
 | `VSync: timeout` / black hang | HLE `VSync` + wall-clock advance on `VSync(-1)` polls |
 | Black screen (no display) | `SetDispMask` wrote `GP1(03h)` inverted (1=off); also RT present stale-frame check was too aggressive (`>4`) |
-| Stuck on starfield intro | BIOS `InitPAD`/`StartPAD` were no-ops — pad never reached the game |
+| Stuck on starfield (title `0x3C`) | Pad InitPAD + once-per-frame edge synth; title GOOL still doesn't draw logo / handle Start — HLE maps Start/Cross → mode Intro `0x1C` |
 | `CdRead: retry...` forever | HLE hi-level `CdRead`/`CdReadSync` + `CdStatus` (no shell-open) |
 | `unmapped call: 0x80049A64` | Post-pass: printf format jump table `@ 0x80010C2C` |
 | `unmapped call: 0x80056828` | Post-pass: state jump table `@ 0x80011198` |
@@ -66,6 +66,11 @@ NTSC-U would be `SCUS-94154` / `SCUS_941.54` — not targeted yet.
 | `unmapped call: 0x8003A27C` / `0x80039470` | Pre-entry trampolines + forced GOOL helper funcs in config |
 | `unmapped call: 0x80034818` | Pad-mode jump table @ `0x80010668` in `func_800347D4` |
 | `unmapped call: 0x80023F40` | Post-pass: cam-interp jump table `@ 0x80010438` in `func_80023D78` |
+| `unmapped call: 0x800340D0` after title→Intro | Post-pass: level-audio jump table `@ 0x800105D0` in `func_80034034` |
+| `unmapped call: 0x80042938` during Intro NSF | Post-pass: poly-raster mid-entries (`RasterContinue`) in `func_800420F4` |
+| Intro NSF past raster → `0x800445CC` / `0x80044514` | Mid-entries in matrix helpers `func_80044410` / `func_80044324` |
+| Next FAIL after those | `unmapped call: 0x80038D94` → mid-entry fallthrough after `L80038D78` in `func_80037930` (P31) |
+| `unmapped call: 0x8010DDB0` | Intro NSF GOOL native (`CdahS`, opcode 49) → HLE + generic MIPS interp in `Dispatcher.Call` (P32/P33) |
 
 ## Dev tip
 

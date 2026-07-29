@@ -39,7 +39,8 @@ public static class LibGpu
             addr = next & 0x1FFFFCu;
         }
 
-        if (_drawLog < 3)
+        // First few + periodic samples so we see if title/intro ever submit more than lines.
+        if (_drawLog < 3 || (_drawLog < 24 && (_drawLog % 3) == 0))
         {
             var top = string.Join(' ',
                 Enumerable.Range(0, 256)
@@ -81,10 +82,14 @@ public static class LibGpu
     public static void PresentPump(CpuContext c, IMemory m)
     {
         Runtime.PresentFrame();
+        // Title mode skips guest PadUpdate; synth edges once per game frame here
+        // (not inside every VSync PresentFrame, which would eat rising edges).
+        Bios.BiosB.SynthTitlePadEdges(m);
         if (_pumpFrames < 180 && (_pumpFrames % 30) == 0)
         {
             Console.WriteLine($"[boot] PresentPump frame={_pumpFrames}");
             Diagnostics.BootLog.Write($"PresentPump frame={_pumpFrames}");
+            Bios.BiosB.LogTitleState(m);
             var gpu = Runtime.Gpu;
             if (gpu != null && _pumpFrames == 30)
             {

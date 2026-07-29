@@ -8,6 +8,11 @@
   "linearSweep": true,
   "debug": false,
   "functions": [
+    { "address": "80038414", "name": "func_80038414" },
+    { "address": "80038998", "name": "func_80038998" },
+    { "address": "80038D94", "name": "func_80038D94" },
+    { "address": "80038EAC", "name": "func_80038EAC" },
+    { "address": "80038FA4", "name": "func_80038FA4" },
     { "address": "800390AC", "name": "func_800390AC" },
     { "address": "80039198", "name": "func_80039198" },
     { "address": "800392A4", "name": "func_800392A4" },

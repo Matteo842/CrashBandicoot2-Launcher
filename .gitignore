@@ -111,6 +111,15 @@ game.recomp.dll
 **/bin/**/recomp/
 !CrashBandicoot2.Launcher/Recomp/
 !CrashBandicoot2.Launcher/Recomp/**
+# But never commit extracted NSF/GOOL blobs (retail-derived), even under Recomp/
+CrashBandicoot2.Launcher/Recomp/overlays/
+**/Recomp/overlays/**/*.bin
+
+# Local one-off patch helpers (disc extract scripts, compile scratch)
+/_patch30/
+/_patch*/
+/_tmp*/
+/_gpcheck/
 
 # --- Runtime / player data next to the exe ----------------------------------
 settings.json

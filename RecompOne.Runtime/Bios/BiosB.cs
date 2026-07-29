@@ -99,9 +99,25 @@ public static class BiosB
         return e.Buttons;
     }
 
+    // SCES-00967 game-mode word. While == -1 the main loop skips func_80015A04,
+    // so InitPAD raw buffers alone never produce Start/Cross edges for title.
+    const uint GameModeAddr = 0x8005F688u; // 0x80060000 - 0x978
+    const uint LevelIdAddr = 0x8005F684u;  // 0x80060000 - 0x97C
+    const uint WorldAddr = 0x8005F624u;    // 0x80060000 - 0x9DC
+    const uint PadFlagsAddr = 0x8006CE2Cu; // 0x80070000 - 0x31D4
+    const uint CamModeAddr = 0x8006CE4Cu;  // 0x80070000 - 0x31B4
+    const uint LevelInfoPtrAddr = 0x80067834u;
+
+    static ushort _lastLoggedState = 0xFFFF;
+    static int _padEdgeLogs;
+    static int _titleDiagLogs;
+
     static void PadRead(IMemory m)
     {
         // Modern InitPAD path: separate 0x22-byte buffers per port.
+        // Only refresh raw status here. Title-mode edge synth must run once per
+        // game frame (PresentPump) — VSync calls PresentFrame/RefreshPad multiple
+        // times per loop and would clear rising-edge taps before GOOL reads them.
         if (_padStarted && (_padBuf1 != 0 || _padBuf2 != 0))
         {
             if (_padBuf1 != 0) WriteInitPadBuf(m, _padBuf1, 0, Hardware.Controller.State,
@@ -128,6 +144,56 @@ public static class BiosB
         m.WriteU8(_padBuf + 7, Hardware.Controller.LeftY);
     }
 
+    // Crash-format buttons after byte-swap+invert (matches guest pad words).
+    const uint CrashStart = 0x0800u;
+    const uint CrashCross = 0x0040u;
+    // Level IDs: title stays in mode=-1 until GOOL writes a new mode; retail title
+    // Start proceeds to Intro. GOOL input/draw on 0x3C is still incomplete, so HLE it.
+    const uint LevelTitle = 0x3Cu;
+    const uint LevelIntro = 0x1Cu;
+
+    /// <summary>
+    /// Once per main-loop PresentPump while mode==-1. Synthesizes digital held/tap
+    /// the guest pad processor would write, without re-clearing edges on every VSync.
+    /// </summary>
+    public static void SynthTitlePadEdges(IMemory m)
+    {
+        if (!_padStarted || m.ReadU32(GameModeAddr) != 0xFFFFFFFFu) return;
+        if (_padBuf1 != 0) SynthDigitalPadEdges(m, _padBuf1);
+        if (_padBuf2 != 0) SynthDigitalPadEdges(m, _padBuf2);
+        LogPadIfChanged(m);
+        TryHleTitleStart(m);
+    }
+
+    static void TryHleTitleStart(IMemory m)
+    {
+        if (m.ReadU32(LevelIdAddr) != LevelTitle) return;
+        uint tap = _padBuf1 != 0 ? m.ReadU32(_padBuf1 + 0x24) : 0;
+        if ((tap & (CrashStart | CrashCross)) == 0) return;
+        m.WriteU32(GameModeAddr, LevelIntro);
+        var msg = $"title HLE Start/Cross -> mode=0x{LevelIntro:X} (Intro)";
+        Console.WriteLine("[boot] " + msg);
+        Diagnostics.BootLog.Write(msg);
+    }
+
+    public static void LogTitleState(IMemory m)
+    {
+        if (_titleDiagLogs >= 8) return;
+        _titleDiagLogs++;
+        uint mode = m.ReadU32(GameModeAddr);
+        uint level = m.ReadU32(LevelIdAddr);
+        uint world = m.ReadU32(WorldAddr);
+        uint flags = m.ReadU32(PadFlagsAddr);
+        uint cam = m.ReadU32(CamModeAddr);
+        uint info = m.ReadU32(LevelInfoPtrAddr);
+        uint type = info != 0 ? m.ReadU32(info + 0x8u) : 0;
+        uint tap = _padBuf1 != 0 ? m.ReadU32(_padBuf1 + 0x24) : 0;
+        uint held = _padBuf1 != 0 ? m.ReadU32(_padBuf1 + 0x28) : 0;
+        var msg = $"title mode=0x{mode:X8} level=0x{level:X} world=0x{world:X8} flags=0x{flags:X8} cam=0x{cam:X8} type=0x{type:X} held=0x{held:X4} tap=0x{tap:X4}";
+        Console.WriteLine("[boot] " + msg);
+        Diagnostics.BootLog.Write(msg);
+    }
+
     static void WriteInitPadBuf(IMemory m, uint buf, int port, ushort buttons,
         byte rx, byte ry, byte lx, byte ly)
     {
@@ -140,6 +206,39 @@ public static class BiosB
         m.WriteU8(buf + 5, ry);
         m.WriteU8(buf + 6, lx);
         m.WriteU8(buf + 7, ly);
+    }
+
+    /// <summary>
+    /// Mirror Crash 2 digital pad post-process (byte-swap + invert + rising edge).
+    /// Pad struct overlays InitPAD buffer: +0x28 held, +0x2C prev, +0x24 just-pressed.
+    /// </summary>
+    static void SynthDigitalPadEdges(IMemory m, uint buf)
+    {
+        ushort raw = m.ReadU16(buf + 2);
+        uint swapped = ((uint)(raw & 0xFF) << 8) | (uint)(raw >> 8);
+        uint held = (~swapped) & 0xFFFFu;
+        uint prev = m.ReadU32(buf + 0x28);
+        m.WriteU32(buf + 0x2C, prev);
+        m.WriteU32(buf + 0x28, held);
+        m.WriteU32(buf + 0x24, held & ~prev & 0xFFFFu);
+    }
+
+    static void LogPadIfChanged(IMemory m)
+    {
+        ushort s = Hardware.Controller.State;
+        if (s == _lastLoggedState) return;
+        _lastLoggedState = s;
+        if (_padEdgeLogs >= 40) return;
+        _padEdgeLogs++;
+        uint mode = m.ReadU32(GameModeAddr);
+        uint tap = _padBuf1 != 0 ? m.ReadU32(_padBuf1 + 0x24) : 0;
+        uint held = _padBuf1 != 0 ? m.ReadU32(_padBuf1 + 0x28) : 0;
+        byte st = _padBuf1 != 0 ? m.ReadU8(_padBuf1) : (byte)0xFF;
+        byte id = _padBuf1 != 0 ? m.ReadU8(_padBuf1 + 1) : (byte)0xFF;
+        ushort raw = _padBuf1 != 0 ? m.ReadU16(_padBuf1 + 2) : (ushort)0;
+        var msg = $"pad state=0x{s:X4} raw={st:X2}/{id:X2}/0x{raw:X4} held=0x{held:X4} tap=0x{tap:X4} mode=0x{mode:X8}";
+        Console.WriteLine("[boot] " + msg);
+        Diagnostics.BootLog.Write(msg);
     }
 
     public static void RefreshPad(IMemory m) => PadRead(m);

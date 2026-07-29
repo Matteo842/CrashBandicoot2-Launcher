@@ -13,12 +13,24 @@ public static class Dispatcher
     static readonly Dictionary<int, string> _lbaToName = [];
     static readonly List<string> _active = [];
     static readonly Dictionary<uint, Action<CpuContext, IMemory>> _funcMap = [];
+    static readonly List<(uint Lo, uint Hi, Action<CpuContext, IMemory, uint> Fn)> _ranges = [];
     private static IOverlay? _pending;
     public static void Register(string name, IOverlay overlay)
     {
         _registry[name] = overlay;
         if (overlay.LbaStart >= 0) _lbaToName[overlay.LbaStart] = name;
     }
+
+    /// <summary>
+    /// Catch mid-function / fallthrough targets inside a recompiled mega-function.
+    /// Exact <see cref="_funcMap"/> hits still win; ranges are only tried on miss.
+    /// </summary>
+    public static void RegisterRange(uint loInclusive, uint hiExclusive, Action<CpuContext, IMemory, uint> fn)
+    {
+        _ranges.Add((loInclusive, hiExclusive, fn));
+    }
+
+    public static void ClearRanges() => _ranges.Clear();
 
     public static string[] ActiveNames
     {
@@ -167,6 +179,8 @@ public static class Dispatcher
         Runtime.OverlayLog.Record(name, OverlayEventKind.Unloaded);
     }
 
+    public static bool IsMapped(uint addr) => _funcMap.ContainsKey(addr);
+
     static int _pumpCounter;
 
     public static void Call(CpuContext c, IMemory m, uint addr)
@@ -177,7 +191,22 @@ public static class Dispatcher
 
         if (BiosKernel.TryDispatch(c, m, addr)) return;
         if (!_funcMap.TryGetValue(addr, out var fn))
+        {
+            for (int i = 0; i < _ranges.Count; i++)
+            {
+                var (lo, hi, rangeFn) = _ranges[i];
+                if (addr >= lo && addr < hi)
+                {
+                    rangeFn(c, m, addr);
+                    return;
+                }
+            }
+
+            // Unmapped mid-entries (EXE jump-table tails) + GOOL opcode-49 NSF natives.
+            if (RecompOne.Runtime.Sdk.LibGool.TryInterpretNative(c, m, addr))
+                return;
             throw new InvalidOperationException($"unmapped call: 0x{addr:X8}");
+        }
         fn(c, m);
     }
 
