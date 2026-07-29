@@ -30,6 +30,7 @@ public static class Runtime
     public static void Initialize(string title)
     {
         Diagnostics.ConsoleMirror.Install();
+        Diagnostics.BootLog.Write($"Initialize({title})");
         HostWindow.Initialize(title);
         Audio.Initialize();
         Audio.SetMasterVolume(Config.ConfigManager.Game.Muted ? 0f : Config.ConfigManager.Game.MasterVolume);

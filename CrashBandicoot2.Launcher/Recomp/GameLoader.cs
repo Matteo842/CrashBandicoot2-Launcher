@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Runtime.Loader;
 using System.Text.Json;
 using RecompOne.Runtime;
+using RecompOne.Runtime.Diagnostics;
 using RecompOne.Runtime.Memory;
 
 namespace CrashBandicoot2.Launcher.Recomp;
@@ -18,7 +19,7 @@ public sealed class GameManifest
 
 public static class GameStore
 {
-    public const string PipelineVersion = "7";
+    public const string PipelineVersion = "12";
 
     public static string RootDir => AppPaths.GameDir;
 
@@ -89,9 +90,11 @@ public static class GameLoader
         try
         {
             run.Invoke(null, [new PSMemory(), cuePath]);
+            BootLog.Write("Entry.Run returned");
         }
         catch (TargetInvocationException ex) when (ex.InnerException != null)
         {
+            BootLog.Write("FAIL: " + ex.InnerException.Message);
             throw new InvalidOperationException(ex.InnerException.Message, ex.InnerException);
         }
     }

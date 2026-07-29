@@ -10,8 +10,14 @@ public static class LibGpu
     static readonly DrawEnvEvent _drawEnvEvent = new();
     static readonly DispEnvEvent _dispEnvEvent = new();
 
+    static int _drawLog;
     public static void DrawOTag(CpuContext c, IMemory m)
     {
+        if (_drawLog < 30)
+        {
+            Diagnostics.BootLog.Write($"DrawOTag ot=0x{c.A0:X8}");
+            _drawLog++;
+        }
         var gpu = Runtime.Gpu;
         if (gpu == null) return;
 
@@ -31,6 +37,18 @@ public static class LibGpu
     public static void DrawSync(CpuContext c, IMemory m) => c.V0 = 0;
 
     /// <summary>
+    /// PsyQ SetDispMask — blank (A0==0) or enable (A0!=0) the display via GP1.
+    /// </summary>
+    public static void SetDispMask(CpuContext c, IMemory m)
+    {
+        Diagnostics.BootLog.Write($"SetDispMask a0={c.A0}");
+        var gpu = Runtime.Gpu;
+        if (gpu != null)
+            gpu.WriteGp1(c.A0 != 0 ? 0x03000001u : 0x03000000u);
+        c.V0 = c.A0;
+    }
+
+    /// <summary>
     /// Stub for PsyQ GPU DMA/IRQ callbacks that ResetGraph installs from GetB0Table()+0x884/+0x894.
     /// Real BIOS ROM is not present under recomp; these are no-ops until proper HLE exists.
     /// </summary>
@@ -39,9 +57,17 @@ public static class LibGpu
     /// <summary>
     /// Present + throttle. Used as a frame-pump hook when the game loop does not call VSync.
     /// </summary>
+    static int _pumpFrames;
+
     public static void PresentPump(CpuContext c, IMemory m)
     {
         Runtime.PresentFrame();
+        if (_pumpFrames < 180 && (_pumpFrames % 30) == 0)
+        {
+            Console.WriteLine($"[boot] PresentPump frame={_pumpFrames}");
+            Diagnostics.BootLog.Write($"PresentPump frame={_pumpFrames}");
+        }
+        _pumpFrames++;
     }
 
     public static void PutDrawEnv(CpuContext c, IMemory m)

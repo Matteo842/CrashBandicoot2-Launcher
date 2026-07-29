@@ -36,9 +36,16 @@ public static class LibCd
     const byte ModeSize1 = 0x20, ModeSize0 = 0x10;
 
     const byte StatMotor = 0x02;
+    const byte StatSeekError = 0x04;
+    const byte StatIdError = 0x08;
+    const byte StatShellOpen = 0x10;
     const byte StatRead = 0x20;
     const byte StatSeek = 0x40;
     const byte StatPlay = 0x80;
+
+    // Retail LIBCD copies of status/mode (SCES-00967 BSS).
+    const uint RetailCdStatusAddr = 0x8005CA74u;
+    const uint RetailCdModeAddr = 0x8005CA84u;
     static byte _status;
     static byte _mode;
     static byte _com;
@@ -72,9 +79,11 @@ public static class LibCd
 
     public static void CdInit(CpuContext c, IMemory m)
     {
+        Diagnostics.BootLog.Write("CdInit");
         CdResetState();
         // PsyQ: returns 1 on success, 0 on failure.
         c.V0 = CdInitInternal() ? 1u : 0u;
+        Diagnostics.BootLog.Write($"CdInit -> {c.V0}");
     }
 
     public static void CdReset(CpuContext c, IMemory m)
@@ -111,6 +120,7 @@ public static class LibCd
         int sectors = (int)c.A0;
         uint buf = c.A1;
         _mode = (byte)c.A2;
+        Diagnostics.BootLog.Write($"CdRead sectors={sectors} buf=0x{buf:X8} mode=0x{_mode:X2}");
         int lba = CurrentLba;
         if (IsAudioRegion(lba) && (_mode & 0x01) == 0)
         {
@@ -131,6 +141,8 @@ public static class LibCd
             for (int j = 0; j < data.Length; j++)
                 m.WriteU8(buf + (uint)(i * size + j), data[j]);
         }
+        AdvancePos(sectors);
+        SyncRetailStatus(m);
         _lastIntr = Complete;
         c.V0 = 1;
     }
@@ -264,8 +276,17 @@ public static class LibCd
     public static void CdReadCallback(CpuContext c, IMemory m) { c.V0 = _cbData; _cbData = c.A0; }
     public static void CdDataCallback(CpuContext c, IMemory m) { c.V0 = _cbData; _cbData = c.A0; }
 
-    public static void CdStatus(CpuContext c, IMemory m) => c.V0 = _status;
-    public static void CdMode(CpuContext c, IMemory m) => c.V0 = _mode;
+    public static void CdStatus(CpuContext c, IMemory m)
+    {
+        SyncRetailStatus(m);
+        c.V0 = _status;
+    }
+
+    public static void CdMode(CpuContext c, IMemory m)
+    {
+        m.WriteU8(RetailCdModeAddr, _mode);
+        c.V0 = _mode;
+    }
     public static void CdLastCom(CpuContext c, IMemory m) => c.V0 = _com;
 
     public static void CdMix(CpuContext c, IMemory m)
@@ -279,7 +300,7 @@ public static class LibCd
     static void CdResetState()
     {
         LibCdStream.OnStopStream();
-        _status = StatMotor; //drive aways spin
+        _status = StatMotor; // drive always spinning; never shell-open
         _mode = 0;
         _com = 0;
         _lastIntr = Complete;
@@ -291,12 +312,23 @@ public static class LibCd
         Array.Clear(_lastResult);
         Runtime.Spu?.SetCdMix(0x80, 0, 0, 0x80); //reset mix
         Dispatcher.ClearPending();
+        SyncRetailStatus();
+    }
+
+    static void SyncRetailStatus(IMemory? m = null)
+    {
+        _status = (byte)(_status & ~StatShellOpen);
+        m ??= Runtime.Mem;
+        if (m == null) return;
+        m.WriteU8(RetailCdStatusAddr, _status);
+        m.WriteU8(RetailCdModeAddr, _mode);
     }
 
     static bool CdInitInternal()
     {
         _lastIntr = Complete;
         _lastResult[0] = _status;
+        SyncRetailStatus();
         return true;
     }
 

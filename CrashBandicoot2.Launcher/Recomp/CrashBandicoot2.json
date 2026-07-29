@@ -20,8 +20,43 @@
       "mode": "replace"
     },
     {
+      "address": "8004C1E4",
+      "target": "RecompOne.Runtime.Sdk.LibGpu.DrawSync",
+      "mode": "replace"
+    },
+    {
+      "address": "8004C240",
+      "target": "RecompOne.Runtime.Sdk.LibGpu.SetDispMask",
+      "mode": "replace"
+    },
+    {
+      "address": "8004C8DC",
+      "target": "RecompOne.Runtime.Sdk.LibGpu.DrawOTag",
+      "mode": "replace"
+    },
+    {
+      "address": "8004C950",
+      "target": "RecompOne.Runtime.Sdk.LibGpu.PutDrawEnv",
+      "mode": "replace"
+    },
+    {
+      "address": "8004CBA8",
+      "target": "RecompOne.Runtime.Sdk.LibGpu.PutDispEnv",
+      "mode": "replace"
+    },
+    {
       "address": "80046C6C",
       "target": "RecompOne.Runtime.Sdk.LibCd.CdInit",
+      "mode": "replace"
+    },
+    {
+      "address": "80046C2C",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdStatus",
+      "mode": "replace"
+    },
+    {
+      "address": "80046C3C",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdMode",
       "mode": "replace"
     },
     {
@@ -62,6 +97,21 @@
     {
       "address": "80047214",
       "target": "RecompOne.Runtime.Sdk.LibCd.CdDataSync",
+      "mode": "replace"
+    },
+    {
+      "address": "80048B90",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdRead",
+      "mode": "replace"
+    },
+    {
+      "address": "8004920C",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdRead",
+      "mode": "replace"
+    },
+    {
+      "address": "80049310",
+      "target": "RecompOne.Runtime.Sdk.LibCd.CdReadSync",
       "mode": "replace"
     },
     {

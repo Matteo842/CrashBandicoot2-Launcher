@@ -73,7 +73,7 @@ public static class HostWindow
         catch (Exception e) {
             Console.WriteLine(e.Message);
         }
-        if (_window.IsClosing) { Runtime.Shutdown(); Environment.Exit(0); }
+        if (_window.IsClosing) { Diagnostics.BootLog.Write("window closing -> Exit(0)"); Runtime.Shutdown(); Environment.Exit(0); }
         InputManager.Poll();
         if (InputManager.ConsumeTopBarToggle())
         {
@@ -111,7 +111,7 @@ public static class HostWindow
     {
         if (_headless || _window == null) return;
         try { _window.DoEvents(); } catch { }
-        if (_window.IsClosing) { Runtime.Shutdown(); Environment.Exit(0); }
+        if (_window.IsClosing) { Diagnostics.BootLog.Write("window closing -> Exit(0)"); Runtime.Shutdown(); Environment.Exit(0); }
         _window.DoRender();
     }
 
@@ -139,7 +139,7 @@ public static class HostWindow
         while (StartupNotice.NeedsAck)
         {
             try { _window.DoEvents(); } catch { }
-            if (_window.IsClosing) { Runtime.Shutdown(); Environment.Exit(0); }
+            if (_window.IsClosing) { Diagnostics.BootLog.Write("window closing -> Exit(0)"); Runtime.Shutdown(); Environment.Exit(0); }
             InputManager.Poll();
             _window.DoRender();
         }
@@ -150,7 +150,7 @@ public static class HostWindow
             if (!string.IsNullOrWhiteSpace(path) && File.Exists(path)) return;
 
             try { _window.DoEvents(); } catch { }
-            if (_window.IsClosing) { Runtime.Shutdown(); Environment.Exit(0); }
+            if (_window.IsClosing) { Diagnostics.BootLog.Write("window closing -> Exit(0)"); Runtime.Shutdown(); Environment.Exit(0); }
             InputManager.Poll();
             _window.DoRender();
         }
