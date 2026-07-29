@@ -127,7 +127,14 @@ public sealed partial class Gpu
         _loadImage = true;
         HleLoadBegin();
         _fifo.Clear();
+        if (_imgLog < 20)
+        {
+            Diagnostics.BootLog.Write($"LoadImage xy={_loadX},{_loadY} {_loadW}x{_loadH} hle={HleOn}");
+            _imgLog++;
+        }
     }
+
+    static int _imgLog;
 
     void StoreImageHalfword(ushort value)
     {

@@ -3,7 +3,7 @@
 **Game (current dump):** Crash Bandicoot 2: Cortex Strikes Back (PAL)  
 **IDs:** `SCES-00967` / boot `SCES_009.67`  
 **Stack:** RecompOne static MIPS→C# + `RecompOne.Runtime`  
-**Status:** past pad-mode jump table; smoke runs 15s+ with PresentPump frames (pipeline **v27**)
+**Status:** display unblanked + present RT selection fixed; framebuffer has pixels (`hleNZ≈full`). OT still mostly lines+fade quad — world textured prims next.
 
 Lessons carried over from Crash 1 (SCUS-94900) — see that project's
 `docs/CRASH_BANDICOOT_RECOMP.md` for the full write-up.
@@ -49,7 +49,7 @@ NTSC-U would be `SCUS-94154` / `SCUS_941.54` — not targeted yet.
 | `unmapped call: 0x00000884` after ResetGraph | Patch `8004A55C` / `8004A570` → `LibGpu.GpuBiosCallback` |
 | Window “Not Responding” | `HostWindow.KeepAlive`; LIBCD HLE; `PresentPump` on `80011E80` |
 | `VSync: timeout` / black hang | HLE `VSync` + wall-clock advance on `VSync(-1)` polls |
-| Black screen (no display) | HLE `SetDispMask` / `PutDispEnv` / `DrawOTag` / … |
+| Black screen (no display) | `SetDispMask` wrote `GP1(03h)` inverted (1=off); also RT present stale-frame check was too aggressive (`>4`) |
 | `CdRead: retry...` forever | HLE hi-level `CdRead`/`CdReadSync` + `CdStatus` (no shell-open) |
 | `unmapped call: 0x80049A64` | Post-pass: printf format jump table `@ 0x80010C2C` |
 | `unmapped call: 0x80056828` | Post-pass: state jump table `@ 0x80011198` |

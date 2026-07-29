@@ -2,6 +2,7 @@ using RecompOne.Runtime.Context;
 using RecompOne.Runtime.Events;
 using RecompOne.Runtime.Hle;
 using RecompOne.Runtime.Memory;
+using System.Linq;
 
 namespace RecompOne.Runtime.Sdk;
 
@@ -9,42 +10,60 @@ public static class LibGpu
 {
     static readonly DrawEnvEvent _drawEnvEvent = new();
     static readonly DispEnvEvent _dispEnvEvent = new();
+    static int _drawEnvLog;
+    static int _dispEnvLog;
 
     static int _drawLog;
     public static void DrawOTag(CpuContext c, IMemory m)
     {
-        if (_drawLog < 30)
-        {
-            Diagnostics.BootLog.Write($"DrawOTag ot=0x{c.A0:X8}");
-            _drawLog++;
-        }
         var gpu = Runtime.Gpu;
         if (gpu == null) return;
 
         uint addr = c.A0 & 0x1FFFFCu;
+        int nodes = 0, words = 0;
+        var ops = new int[256];
         for (int guard = 0; guard < 0x100000; guard++)
         {
             uint header = m.ReadU32(addr);
             uint count = header >> 24;
             for (uint i = 0; i < count; i++)
-                gpu.WriteGp0(m.ReadU32(addr + 4u + i * 4u));
+            {
+                uint w = m.ReadU32(addr + 4u + i * 4u);
+                gpu.WriteGp0(w);
+                if (i == 0) ops[w >> 24]++;
+                words++;
+            }
+            nodes++;
             uint next = header & 0xFFFFFFu;
             if (next == 0xFFFFFFu || (next & 0x800000u) != 0) break;
             addr = next & 0x1FFFFCu;
+        }
+
+        if (_drawLog < 3)
+        {
+            var top = string.Join(' ',
+                Enumerable.Range(0, 256)
+                    .Where(i => ops[i] > 0)
+                    .OrderByDescending(i => ops[i])
+                    .Take(8)
+                    .Select(i => $"0x{i:X2}:{ops[i]}"));
+            Diagnostics.BootLog.Write($"DrawOTag ot=0x{c.A0:X8} nodes={nodes} words={words} ops=[{top}]");
+            _drawLog++;
         }
     }
 
     public static void DrawSync(CpuContext c, IMemory m) => c.V0 = 0;
 
     /// <summary>
-    /// PsyQ SetDispMask — blank (A0==0) or enable (A0!=0) the display via GP1.
+    /// PsyQ SetDispMask — blank (A0==0) or enable (A0!=0) the display via GP1(03h).
+    /// Hardware: bit0 0=display on, 1=display off (GPUSTAT.23).
     /// </summary>
     public static void SetDispMask(CpuContext c, IMemory m)
     {
         Diagnostics.BootLog.Write($"SetDispMask a0={c.A0}");
         var gpu = Runtime.Gpu;
         if (gpu != null)
-            gpu.WriteGp1(c.A0 != 0 ? 0x03000001u : 0x03000000u);
+            gpu.WriteGp1(c.A0 != 0 ? 0x03000000u : 0x03000001u);
         c.V0 = c.A0;
     }
 
@@ -66,6 +85,29 @@ public static class LibGpu
         {
             Console.WriteLine($"[boot] PresentPump frame={_pumpFrames}");
             Diagnostics.BootLog.Write($"PresentPump frame={_pumpFrames}");
+            var gpu = Runtime.Gpu;
+            if (gpu != null && _pumpFrames == 30)
+            {
+                int x0 = gpu.DisplayX, y0 = gpu.DisplayY;
+                int w = Math.Min(gpu.DisplayWidth, 64), h = Math.Min(gpu.DisplayHeight, 64);
+                int nz = 0, nzHle = 0;
+                var vram = gpu.Vram;
+                for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++)
+                    if (vram[(y0 + y) * VramShadow.Width + (x0 + x)] != 0) nz++;
+
+                if (Hle.GpuHle.Backend is { Ready: true } be)
+                {
+                    var buf = new ushort[w * h];
+                    be.ReadVram(x0, y0, w, h, buf);
+                    for (int i = 0; i < buf.Length; i++)
+                        if (buf[i] != 0) nzHle++;
+                }
+
+                var msg = $"display on={gpu.DisplayEnabled} xy={x0},{y0} wh={gpu.DisplayWidth}x{gpu.DisplayHeight} shadowNZ={nz} hleNZ={nzHle}/{w * h}";
+                Console.WriteLine($"[boot] {msg}");
+                Diagnostics.BootLog.Write(msg);
+            }
         }
         _pumpFrames++;
     }
@@ -86,6 +128,12 @@ public static class LibGpu
         byte dfe = m.ReadU8(env + 0x17);
         byte isbg = m.ReadU8(env + 0x18);
         byte r0 = m.ReadU8(env + 0x19), g0 = m.ReadU8(env + 0x1A), b0 = m.ReadU8(env + 0x1B);
+
+        if (_drawEnvLog < 6)
+        {
+            Diagnostics.BootLog.Write($"PutDrawEnv clip={clipX},{clipY} {clipW}x{clipH} ofs={ofsX},{ofsY} isbg={isbg} rgb={r0},{g0},{b0}");
+            _drawEnvLog++;
+        }
 
         gpu.WriteGp0(GetCs(clipX, clipY));
         gpu.WriteGp0(GetCe((short)(clipX + clipW - 1), (short)(clipY + clipH - 1)));
@@ -130,6 +178,12 @@ public static class LibGpu
         byte isinter = m.ReadU8(env + 0x10);
         byte isrgb24 = m.ReadU8(env + 0x11);
         bool pal = gpu.Pal;
+
+        if (_dispEnvLog < 6)
+        {
+            Diagnostics.BootLog.Write($"PutDispEnv disp={dispX},{dispY} {dispW}x{dispH} scr={scrX},{scrY} {scrW}x{scrH} inter={isinter} rgb24={isrgb24}");
+            _dispEnvLog++;
+        }
 
         gpu.WriteGp1(0x05000000u | (((uint)dispY & 0x3FF) << 10) | ((uint)dispX & 0x3FF));
 

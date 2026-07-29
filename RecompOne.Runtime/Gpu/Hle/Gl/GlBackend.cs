@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Runtime.InteropServices;
 using Silk.NET.OpenGL;
 
@@ -15,6 +16,7 @@ public sealed class GlBackend : IGpuBackend
     readonly GlDisplayRt?[] _rts = new GlDisplayRt?[2];
     long _rtStamp;
     long _frame;
+    int _presentLog;
 
     uint _vao, _vbo, _presentVao, _presentVbo, _progPrim, _progPresent, _progPresent24;
     uint _presentFbo, _presentTex;
@@ -344,7 +346,7 @@ public sealed class GlBackend : IGpuBackend
     void FillRtFull(GlDisplayRt rt, ushort color15)
     {
         float r = (color15 & 0x1F) / 31f, g = ((color15 >> 5) & 0x1F) / 31f, b = ((color15 >> 10) & 0x1F) / 31f;
-        float a = (color15 & 0x8000) != 0 ? 1f : 0f;
+        float a = 1f;
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, rt.Fbo);
         _gl.Disable(EnableCap.ScissorTest);
         _gl.ClearColor(r, g, b, a);
@@ -494,10 +496,17 @@ public sealed class GlBackend : IGpuBackend
         if (!rgb24)
             foreach (var rt in _rts)
             {
-                if (rt == null || _frame - rt.LastDrawFrame > 4) continue;
+                if (rt == null || _frame - rt.LastDrawFrame > 90) continue;
                 if (dispX < rt.X || dispY < rt.Y || dispX + w > rt.X + rt.W || dispY + h > rt.Y + rt.H) continue;
                 if (src == null || rt.LastDrawFrame > src.LastDrawFrame) src = rt;
             }
+
+        if (_presentLog < 2 || _frame == 60)
+        {
+            string rts = string.Join(',', _rts.Select(r => r == null ? "-" : $"{r.X},{r.Y} {r.W}x{r.H} d={_frame - r.LastDrawFrame}"));
+            Diagnostics.BootLog.Write($"Present disp={dispX},{dispY} {w}x{h} src={(src == null ? "vram" : $"{src.X},{src.Y}")} rts=[{rts}] frame={_frame}");
+            if (_presentLog < 2) _presentLog++;
+        }
 
         int w1x = src != null ? w + src.Margin * 2 : w;
         int h1x = h;

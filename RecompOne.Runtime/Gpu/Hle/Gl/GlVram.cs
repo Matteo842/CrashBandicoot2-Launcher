@@ -77,7 +77,8 @@ public sealed class GlVram
     public void Fill(int x, int y, int w, int h, ushort color15)
     {
         float r = (color15 & 0x1F) / 31f, g = ((color15 >> 5) & 0x1F) / 31f, b = ((color15 >> 10) & 0x1F) / 31f;
-        float a = (color15 & 0x8000) != 0 ? 1f : 0f;
+        // VRAM fill is opaque RGB; mask bit is not framebuffer alpha for clears.
+        float a = 1f;
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _fbo);
         _gl.Enable(EnableCap.ScissorTest);
         _gl.Scissor(x * Scale, y * Scale, (uint)Math.Max(0, w * Scale), (uint)Math.Max(0, h * Scale));
