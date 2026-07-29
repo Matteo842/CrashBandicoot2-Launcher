@@ -20,5 +20,7 @@ public interface IGpuBackend
 
     // these touch gl
     void Flush();
+    /// <summary>Call after a full DrawOTag so Present can show a completed FB, not an in-progress fill.</summary>
+    void LatchFrame();
     void Present(in HleDispEnv disp);
 }

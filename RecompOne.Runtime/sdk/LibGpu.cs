@@ -14,6 +14,7 @@ public static class LibGpu
     static int _dispEnvLog;
 
     static int _drawLog;
+    static int _drawSkipLog;
     public static void DrawOTag(CpuContext c, IMemory m)
     {
         var gpu = Runtime.Gpu;
@@ -39,8 +40,11 @@ public static class LibGpu
             addr = next & 0x1FFFFCu;
         }
 
-        // First few + periodic samples so we see if title/intro ever submit more than lines.
-        if (_drawLog < 3 || (_drawLog < 24 && (_drawLog % 3) == 0))
+        GpuHle.Backend?.Flush();
+        GpuHle.Backend?.LatchFrame();
+
+        // Generous logging through title→intro so we can see submit resume/stall.
+        if (_drawLog < 60)
         {
             var top = string.Join(' ',
                 Enumerable.Range(0, 256)
@@ -49,8 +53,28 @@ public static class LibGpu
                     .Take(8)
                     .Select(i => $"0x{i:X2}:{ops[i]}"));
             Diagnostics.BootLog.Write($"DrawOTag ot=0x{c.A0:X8} nodes={nodes} words={words} ops=[{top}]");
+            if (_drawLog < 8 || (_drawLog % 5) == 0)
+                Console.WriteLine($"[boot] DrawOTag ot=0x{c.A0:X8} nodes={nodes} words={words}");
             _drawLog++;
         }
+    }
+
+    public static void ResetDrawLogBudget()
+    {
+        _drawLog = 0;
+        _drawSkipLog = 0;
+        _drawEnvLog = 0;
+        _dispEnvLog = 0;
+    }
+
+    /// <summary>Diag: guest skipped DrawOTag because hold != 0.</summary>
+    public static void NoteDrawHoldSkip(IMemory m, uint hold)
+    {
+        if (_drawSkipLog >= 8) return;
+        _drawSkipLog++;
+        var msg = $"DrawOTag SKIP hold=0x{hold:X8}";
+        Console.WriteLine("[boot] " + msg);
+        Diagnostics.BootLog.Write(msg);
     }
 
     public static void DrawSync(CpuContext c, IMemory m) => c.V0 = 0;
@@ -91,7 +115,8 @@ public static class LibGpu
             Diagnostics.BootLog.Write($"PresentPump frame={_pumpFrames}");
             Bios.BiosB.LogTitleState(m);
             var gpu = Runtime.Gpu;
-            if (gpu != null && _pumpFrames == 30)
+            // Sample once on title and again after Intro should be running.
+            if (gpu != null && (_pumpFrames == 30 || _pumpFrames == 90 || _pumpFrames == 120 || _pumpFrames == 150))
             {
                 int x0 = gpu.DisplayX, y0 = gpu.DisplayY;
                 int w = Math.Min(gpu.DisplayWidth, 64), h = Math.Min(gpu.DisplayHeight, 64);
@@ -107,11 +132,34 @@ public static class LibGpu
                     be.ReadVram(x0, y0, w, h, buf);
                     for (int i = 0; i < buf.Length; i++)
                         if (buf[i] != 0) nzHle++;
+
+                    // Also sample the opposite double-buffer half.
+                    int ox = x0 >= 512 ? 0 : 512;
+                    var buf2 = new ushort[w * h];
+                    be.ReadVram(ox, y0, w, h, buf2);
+                    int nzOther = 0;
+                    for (int i = 0; i < buf2.Length; i++)
+                        if (buf2[i] != 0) nzOther++;
+
+                    // Center 64x64 — Intro mesh often misses the top-left corner.
+                    int dw = Math.Max(gpu.DisplayWidth, 1), dh = Math.Max(gpu.DisplayHeight, 1);
+                    int cx = x0 + Math.Max(0, dw / 2 - 32), cy = y0 + Math.Max(0, dh / 2 - 32);
+                    int cw = Math.Min(64, dw), ch = Math.Min(64, dh);
+                    var bufC = new ushort[cw * ch];
+                    be.ReadVram(cx, cy, cw, ch, bufC);
+                    int nzCenter = 0;
+                    for (int i = 0; i < bufC.Length; i++)
+                        if (bufC[i] != 0) nzCenter++;
+
+                    var msg2 = $"fbSample disp={x0},{y0} nz={nzHle} other={ox},{y0} nz={nzOther} center={cx},{cy} nz={nzCenter}/{cw * ch}";
+                    Console.WriteLine($"[boot] {msg2}");
+                    Diagnostics.BootLog.Write(msg2);
                 }
 
                 var msg = $"display on={gpu.DisplayEnabled} xy={x0},{y0} wh={gpu.DisplayWidth}x{gpu.DisplayHeight} shadowNZ={nz} hleNZ={nzHle}/{w * h}";
                 Console.WriteLine($"[boot] {msg}");
                 Diagnostics.BootLog.Write(msg);
+                Gpu.LogTriStats();
             }
         }
         _pumpFrames++;
@@ -134,9 +182,11 @@ public static class LibGpu
         byte isbg = m.ReadU8(env + 0x18);
         byte r0 = m.ReadU8(env + 0x19), g0 = m.ReadU8(env + 0x1A), b0 = m.ReadU8(env + 0x1B);
 
-        if (_drawEnvLog < 6)
+        if (_drawEnvLog < 24)
         {
             Diagnostics.BootLog.Write($"PutDrawEnv clip={clipX},{clipY} {clipW}x{clipH} ofs={ofsX},{ofsY} isbg={isbg} rgb={r0},{g0},{b0}");
+            if (_drawEnvLog < 12)
+                Console.WriteLine($"[boot] PutDrawEnv clip={clipX},{clipY} ofs={ofsX},{ofsY} isbg={isbg}");
             _drawEnvLog++;
         }
 
@@ -184,9 +234,11 @@ public static class LibGpu
         byte isrgb24 = m.ReadU8(env + 0x11);
         bool pal = gpu.Pal;
 
-        if (_dispEnvLog < 6)
+        if (_dispEnvLog < 24)
         {
             Diagnostics.BootLog.Write($"PutDispEnv disp={dispX},{dispY} {dispW}x{dispH} scr={scrX},{scrY} {scrW}x{scrH} inter={isinter} rgb24={isrgb24}");
+            if (_dispEnvLog < 12)
+                Console.WriteLine($"[boot] PutDispEnv disp={dispX},{dispY} {dispW}x{dispH}");
             _dispEnvLog++;
         }
 

@@ -24,7 +24,7 @@ public sealed class GlDisplayRt
     public bool Intersects(int rx, int ry, int rw, int rh)
         => rx < X + W && X < rx + rw && ry < Y + H && Y < ry + rh;
 
-    public void Create(GL gl)
+    public unsafe void Create(GL gl)
     {
         Tex = gl.GenTexture();
         gl.BindTexture(TextureTarget.Texture2D, Tex);
@@ -32,13 +32,17 @@ public sealed class GlDisplayRt
         gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Nearest);
         gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)GLEnum.ClampToEdge);
         gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)GLEnum.ClampToEdge);
-        gl.TexImage2D<ushort>(TextureTarget.Texture2D, 0, InternalFormat.Rgb5A1, (uint)TexW, (uint)TexH, 0,
-            PixelFormat.Rgba, PixelType.UnsignedShort1555Rev, new ushort[TexW * TexH].AsSpan());
+        // Match Crash 1: allocate storage with a null data pointer (no giant CPU wipe).
+        gl.TexImage2D(TextureTarget.Texture2D, 0, InternalFormat.Rgba8, (uint)TexW, (uint)TexH, 0,
+            PixelFormat.Rgba, PixelType.UnsignedByte, null);
 
         Fbo = gl.GenFramebuffer();
         gl.BindFramebuffer(FramebufferTarget.Framebuffer, Fbo);
         gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0,
             TextureTarget.Texture2D, Tex, 0);
+        var status = gl.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+        if (status != GLEnum.FramebufferComplete)
+            Console.WriteLine($"[GlBackend] display RT FBO incomplete: {status}");
         gl.ClearColor(0f, 0f, 0f, 0f);
         gl.Disable(EnableCap.ScissorTest);
         gl.Clear(ClearBufferMask.ColorBufferBit);

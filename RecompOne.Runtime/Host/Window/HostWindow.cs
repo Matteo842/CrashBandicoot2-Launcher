@@ -174,9 +174,14 @@ public static class HostWindow
         Hle.GlVram.Scale = ConfigManager.View.NativeResolution ? 1 : 4;
         _glBackend = new Hle.GlBackend(_gl);
         _glBackend.InitGl();
-        Hle.GpuHle.Active = _glBackend.Ready;
+        // Soft-only for Crash 2 until the GL RT path matches Crash 1 behaviour.
+        // HLE still inits (for later) but must not own prims — dual soft+HLE left
+        // intro at ~30 shadow pixels/frame and Output stuck on a black snap.
+        Hle.GpuHle.Active = false;
         Hle.GpuHle.Backend = _glBackend;
         Hle.GpuHle.NativeResolution = ConfigManager.View.NativeResolution;
+        Console.WriteLine("[boot] GPU: soft raster (HLE display RT disabled)");
+        Diagnostics.BootLog.Write("GPU: soft raster (HLE display RT disabled)");
 
         _imgui = new ImGuiController(_gl, _window, input, null, ConfigureImGui);
 
@@ -238,22 +243,8 @@ public static class HostWindow
         if (gpu != null)
         {
 
-            if (Hle.GpuHle.Active && _glBackend is { Ready: true } && gpu.DisplayEnabled)
-            {
-                var wf = _window!.FramebufferSize;
-                var (tex, tw, th, aspect) = _glBackend.PresentDisplay(
-                    gpu.DisplayX, gpu.DisplayY,
-                    gpu.DisplayWidth, gpu.DisplayHeight,
-                    gpu.Display24Bit,
-                    outW: wf.X, outH: wf.Y);
-                if (tex != 0) OutputPanel.SetTexture(tex, tw, th, aspect);
-                gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-                gl.Viewport(0, 0, (uint)wf.X, (uint)wf.Y);
-            }
-            else
-            {
-                UploadDisplayTexture(gl, gpu);
-            }
+            // Soft CPU VRAM → Output (HLE Present disabled while Active=false).
+            UploadDisplayTexture(gl, gpu);
 
             if (PanelManager.Get<VramViewerPanel>()?.IsOpen == true)
                 UploadVramTexture(gl, gpu);
@@ -350,32 +341,94 @@ public static class HostWindow
         return tex;
     }
 
+    static int _softPresentLog;
     static void UploadDisplayTexture(GL gl, Gpu gpu)
     {
         int w = gpu.DisplayWidth, h = gpu.DisplayHeight;
         if (!gpu.DisplayEnabled || w <= 0 || h <= 0) return;
+
+        // If the current display start is empty, try the other double-buffer half
+        // (common when Present lands mid-swap).
+        int dx = gpu.DisplayX, dy = gpu.DisplayY;
+        int nz = CountNz(gpu.Vram, dx, dy, Math.Min(w, 64), Math.Min(h, 64));
+        if (nz == 0)
+        {
+            int ox = dx >= 512 ? 0 : 512;
+            int nz2 = CountNz(gpu.Vram, ox, dy, Math.Min(w, 64), Math.Min(h, 64));
+            if (nz2 > nz) { dx = ox; nz = nz2; }
+        }
+        if (_softPresentLog < 8)
+        {
+            _softPresentLog++;
+            var msg = $"softPresent disp={gpu.DisplayX},{gpu.DisplayY}->{dx},{dy} {w}x{h} nz64={nz}";
+            Diagnostics.BootLog.Write(msg);
+            Console.WriteLine("[boot] " + msg);
+        }
+
         int needed = w * h * 3;
         if (_rgbDisplay.Length < needed) _rgbDisplay = new byte[needed];
-        ConvertDisplay(gpu, w, h);
+        ConvertDisplayAt(gpu, dx, dy, w, h);
         gl.BindTexture(TextureTarget.Texture2D, _displayTex);
         gl.TexImage2D<byte>(TextureTarget.Texture2D, 0, InternalFormat.Rgb, (uint)w, (uint)h, 0,
             PixelFormat.Rgb, PixelType.UnsignedByte, _rgbDisplay.AsSpan(0, needed));
         OutputPanel.SetTexture(_displayTex, w, h);
     }
 
+    static int CountNz(ushort[] vram, int dx, int dy, int w, int h)
+    {
+        int nz = 0;
+        for (int y = 0; y < h; y++)
+        {
+            int line = ((dy + y) & (Gpu.VramHeight - 1)) * Gpu.VramWidth;
+            for (int x = 0; x < w; x++)
+                if (vram[line + ((dx + x) & (Gpu.VramWidth - 1))] != 0) nz++;
+        }
+        return nz;
+    }
+
+    static void ConvertDisplayAt(Gpu gpu, int dx, int dy, int w, int h)
+    {
+        var vram = gpu.Vram;
+        int o = 0;
+        if (gpu.Display24Bit)
+        {
+            for (int y = 0; y < h; y++)
+            {
+                int lineByte = ((dy + y) * Gpu.VramWidth + dx) * 2;
+                for (int x = 0; x < w; x++)
+                {
+                    int bo = lineByte + x * 3;
+                    _rgbDisplay[o++] = VramByte(vram, bo);
+                    _rgbDisplay[o++] = VramByte(vram, bo + 1);
+                    _rgbDisplay[o++] = VramByte(vram, bo + 2);
+                }
+            }
+        }
+        else
+        {
+            for (int y = 0; y < h; y++)
+            {
+                int line = ((dy + y) & (Gpu.VramHeight - 1)) * Gpu.VramWidth;
+                for (int x = 0; x < w; x++)
+                {
+                    ushort px = vram[line + ((dx + x) & (Gpu.VramWidth - 1))];
+                    _rgbDisplay[o++] = (byte)((px & 0x1F) << 3);
+                    _rgbDisplay[o++] = (byte)(((px >> 5) & 0x1F) << 3);
+                    _rgbDisplay[o++] = (byte)(((px >> 10) & 0x1F) << 3);
+                }
+            }
+        }
+    }
+
+    static void ConvertDisplay(Gpu gpu, int w, int h) => ConvertDisplayAt(gpu, gpu.DisplayX, gpu.DisplayY, w, h);
+
     static ushort[] _vramView = new ushort[Gpu.VramWidth * Gpu.VramHeight];
     static void UploadVramTexture(GL gl, Gpu gpu)
     {
         const int sz = Gpu.VramWidth * Gpu.VramHeight * 3;
         if (_rgbVram.Length < sz) _rgbVram = new byte[sz];
-        ushort[] src;
-        if (Hle.GpuHle.Active && _glBackend is { Ready: true })
-        {
-            _glBackend.ReadVram(0, 0, Gpu.VramWidth, Gpu.VramHeight, _vramView);
-            src = _vramView;
-        }
-        else src = gpu.Vram;
-        ConvertVramToBuffer(src, _rgbVram);
+        // Prefer CPU VRAM (soft raster mirror) so the viewer matches Output.
+        ConvertVramToBuffer(gpu.Vram, _rgbVram);
         gl.BindTexture(TextureTarget.Texture2D, _vramTex);
         gl.TexImage2D<byte>(TextureTarget.Texture2D, 0, InternalFormat.Rgb, Gpu.VramWidth, Gpu.VramHeight, 0, PixelFormat.Rgb, PixelType.UnsignedByte, _rgbVram.AsSpan(0, sz));
         VramViewerPanel.SetTexture(_vramTex, Gpu.VramWidth, Gpu.VramHeight);
@@ -406,41 +459,6 @@ public static class HostWindow
             Memory.RamLogger.Width, Memory.RamLogger.Height, 0,
             PixelFormat.Rgba, PixelType.UnsignedByte, _ramFront);
         RamMapPanel.SetTexture(_ramTex);
-    }
-
-    static void ConvertDisplay(Gpu gpu, int w, int h)
-    {
-        var vram = gpu.Vram;
-        int dx = gpu.DisplayX, dy = gpu.DisplayY;
-        int o = 0;
-        if (gpu.Display24Bit)
-        {
-            for (int y = 0; y < h; y++)
-            {
-                int lineByte = ((dy + y) * Gpu.VramWidth + dx) * 2;
-                for (int x = 0; x < w; x++)
-                {
-                    int bo = lineByte + x * 3;
-                    _rgbDisplay[o++] = VramByte(vram, bo);
-                    _rgbDisplay[o++] = VramByte(vram, bo + 1);
-                    _rgbDisplay[o++] = VramByte(vram, bo + 2);
-                }
-            }
-        }
-        else
-        {
-            for (int y = 0; y < h; y++)
-            {
-                int line = ((dy + y) & (Gpu.VramHeight - 1)) * Gpu.VramWidth;
-                for (int x = 0; x < w; x++)
-                {
-                    ushort px = vram[line + ((dx + x) & (Gpu.VramWidth - 1))];
-                    _rgbDisplay[o++] = (byte)((px & 0x1F) << 3);
-                    _rgbDisplay[o++] = (byte)(((px >> 5) & 0x1F) << 3);
-                    _rgbDisplay[o++] = (byte)(((px >> 10) & 0x1F) << 3);
-                }
-            }
-        }
     }
 
     static void ConvertVramToBuffer(ushort[] vram, byte[] output)

@@ -26,15 +26,61 @@ public sealed partial class Gpu
         Textured = tex, SemiTrans = semi, RawTexture = raw, Gouraud = gouraud, TPage = (ushort)CurTPage(), Clut = (ushort)clut,
     };
 
+    static int _triLog;
+    static int _triOk, _triDropSpan, _triDropArea;
+    static int _triMinX = int.MaxValue, _triMinY = int.MaxValue, _triMaxX = int.MinValue, _triMaxY = int.MinValue;
+
     void HleTri(in Vert a, in Vert b, in Vert c, bool tex, bool gouraud, bool semi, bool raw, int clut)
     {
         int spanX = Math.Max(a.X, Math.Max(b.X, c.X)) - Math.Min(a.X, Math.Min(b.X, c.X));
         int spanY = Math.Max(a.Y, Math.Max(b.Y, c.Y)) - Math.Min(a.Y, Math.Min(b.Y, c.Y));
-        if (spanX > 1023 || spanY > 511) return;
+        if (spanX > 1023 || spanY > 511)
+        {
+            _triDropSpan++;
+            return;
+        }
+
+        long area = (long)(b.X - a.X) * (c.Y - a.Y) - (long)(b.Y - a.Y) * (c.X - a.X);
+        if (area == 0) { _triDropArea++; return; }
+
+        _triOk++;
+        _triMinX = Math.Min(_triMinX, Math.Min(a.X, Math.Min(b.X, c.X)));
+        _triMinY = Math.Min(_triMinY, Math.Min(a.Y, Math.Min(b.Y, c.Y)));
+        _triMaxX = Math.Max(_triMaxX, Math.Max(a.X, Math.Max(b.X, c.X)));
+        _triMaxY = Math.Max(_triMaxY, Math.Max(a.Y, Math.Max(b.Y, c.Y)));
+
+        if (_triLog < 6)
+        {
+            _triLog++;
+            var msg = $"HleTri #{_triLog} xy=({a.X},{a.Y})({b.X},{b.Y})({c.X},{c.Y}) rgb=({a.R},{a.G},{a.B}) tex={tex} ofs={_drawOffsetX},{_drawOffsetY} clip={_drawAreaLeft},{_drawAreaTop}-{_drawAreaRight},{_drawAreaBottom}";
+            Console.WriteLine("[boot] " + msg);
+            Diagnostics.BootLog.Write(msg);
+        }
 
         var be = GpuHle.Backend!;
         be.SetDrawEnv(CurEnv());
         be.DrawTri(HV(a), HV(b), HV(c), PrimOf(tex, semi, raw, clut, gouraud));
+    }
+
+    public static void ResetTriLog()
+    {
+        _triLog = 0;
+        _triOk = _triDropSpan = _triDropArea = 0;
+        _triMinX = _triMinY = int.MaxValue;
+        _triMaxX = _triMaxY = int.MinValue;
+        // Also allow FillRect logs again for Intro.
+        // (fill log lives in GlBackend — reset via Backend if needed)
+    }
+
+    public static void LogTriStats()
+    {
+        if (_triOk + _triDropSpan + _triDropArea == 0) return;
+        var msg = $"HleTri stats ok={_triOk} dropSpan={_triDropSpan} dropArea={_triDropArea} bbox={_triMinX},{_triMinY}-{_triMaxX},{_triMaxY}";
+        Console.WriteLine("[boot] " + msg);
+        Diagnostics.BootLog.Write(msg);
+        _triOk = _triDropSpan = _triDropArea = 0;
+        _triMinX = _triMinY = int.MaxValue;
+        _triMaxX = _triMaxY = int.MinValue;
     }
 
     void HleRect(int x, int y, int w, int h, int u, int v, int clut, int r, int g, int b, bool tex, bool semi, bool raw)

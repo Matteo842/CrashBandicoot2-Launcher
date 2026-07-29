@@ -20,6 +20,7 @@ public sealed class GlBackend : IGpuBackend
 
     uint _vao, _vbo, _presentVao, _presentVbo, _progPrim, _progPresent, _progPresent24;
     uint _presentFbo, _presentTex;
+    uint _dummyDestTex; // bound as uDest when drawing to VRAM (avoid FBO feedback)
     int _presentW, _presentH;
     bool _presentNearest;
 
@@ -29,12 +30,16 @@ public sealed class GlBackend : IGpuBackend
     HleDrawEnv _env;
 
     GlDisplayRt? _kTarget;
+    bool _snapValid;
+    int _snapW, _snapH;
+    float _snapAspect = GpuHle.OutputAspect;
     bool _kTransparent;
     int _kBlend, _kSetMask, _kCheckMask;
     int _kTwAndX, _kTwAndY, _kTwOrX, _kTwOrY;
     int _kClipX0, _kClipY0, _kClipX1, _kClipY1;
-    int _uTexWindow, _uBlend, _uBlendOpaque, _uSetMask, _uCheckMask, _uPosBias, _uFbInv;
+    int _uTexWindow, _uSetMask, _uCheckMask, _uPosBias, _uFbInv, _uVertexOffset;
     int _uPresentOrigin, _uPresentSize, _uPresentTexSize, _uPresent24Origin, _uPresent24Size;
+    int _flushDiag;
 
     public bool Ready { get; private set; }
 
@@ -50,17 +55,18 @@ public sealed class GlBackend : IGpuBackend
         if (_progPrim == 0 || _progPresent == 0 || _progPresent24 == 0) return;
 
         _uTexWindow = _gl.GetUniformLocation(_progPrim, "uTexWindow");
-        _uBlend = _gl.GetUniformLocation(_progPrim, "uBlend");
-        _uBlendOpaque = _gl.GetUniformLocation(_progPrim, "uBlendOpaque");
         _uSetMask = _gl.GetUniformLocation(_progPrim, "uSetMask");
         _uCheckMask = _gl.GetUniformLocation(_progPrim, "uCheckMask");
         _uPosBias = _gl.GetUniformLocation(_progPrim, "uPosBias");
         _uFbInv = _gl.GetUniformLocation(_progPrim, "uFbInv");
+        _uVertexOffset = _gl.GetUniformLocation(_progPrim, "uVertexOffset");
 
         _gl.UseProgram(_progPrim);
         _gl.Uniform1(_gl.GetUniformLocation(_progPrim, "uVram"), 0);
         _gl.Uniform1(_gl.GetUniformLocation(_progPrim, "uDest"), 1);
         _gl.Uniform1(_gl.GetUniformLocation(_progPrim, "uScale"), GlVram.Scale);
+        if (_uVertexOffset >= 0) _gl.Uniform2(_uVertexOffset, 0f, 0f);
+        Console.WriteLine($"[GlBackend] prim uniforms texWin={_uTexWindow} posBias={_uPosBias} fbInv={_uFbInv} vOff={_uVertexOffset} vertSize={sizeof(GlVertex)}");
 
         _uPresentOrigin = _gl.GetUniformLocation(_progPresent, "uOrigin");
         _uPresentSize = _gl.GetUniformLocation(_progPresent, "uSize");
@@ -107,6 +113,17 @@ public sealed class GlBackend : IGpuBackend
         _gl.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0, TextureTarget.Texture2D, _presentTex, 0);
         _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
 
+        // 1x1 dummy so uDest is never the same texture as the color attachment when
+        // drawing into full VRAM (GL framebuffer feedback → silent black draws).
+        _dummyDestTex = _gl.GenTexture();
+        _gl.BindTexture(TextureTarget.Texture2D, _dummyDestTex);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)GLEnum.Nearest);
+        _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Nearest);
+        Span<ushort> dummyPx = stackalloc ushort[1];
+        dummyPx[0] = 0;
+        _gl.TexImage2D<ushort>(TextureTarget.Texture2D, 0, InternalFormat.Rgb5A1, 1, 1, 0,
+            PixelFormat.Rgba, PixelType.UnsignedShort1555Rev, dummyPx);
+
         _kClipX1 = 1023; _kClipY1 = 511;
         Ready = true;
     }
@@ -116,11 +133,27 @@ public sealed class GlBackend : IGpuBackend
     const int FbSlackW = 64;
     const int FbSlackH = 32;
 
+    static int _classifyMissLog;
+
     GlDisplayRt? Classify()
     {
         int clipX = _env.ClipX0, clipY = _env.ClipY0;
         int clipW = _env.ClipX1 - _env.ClipX0 + 1, clipH = _env.ClipY1 - _env.ClipY0 + 1;
         if (clipW <= 0 || clipH <= 0) return null;
+
+        // Full-VRAM / oversized clips must not bind a single 512-wide RT (scissor would
+        // drop the other half). Draw to VRAM; Flush syncs intersecting RTs.
+        if (clipW > 640 || clipH > 320)
+        {
+            if (_classifyMissLog < 8)
+            {
+                _classifyMissLog++;
+                var msg = $"Classify VRAM clip={clipX},{clipY} {clipW}x{clipH}";
+                Diagnostics.BootLog.Write(msg);
+                Console.WriteLine("[boot] " + msg);
+            }
+            return null;
+        }
 
         long bestStamp = -1;
         int fbX = 0, fbY = 0, fbW = 0, fbH = 0;
@@ -131,13 +164,33 @@ public sealed class GlBackend : IGpuBackend
 
             bool clipInside = clipX >= r.X && clipX + clipW <= r.X + r.W &&
                               clipY >= r.Y && clipY + clipH <= r.Y + r.H;
+            // Draw clip often 512x256 while NotifyDisplay is 512x224 (delta 32).
             bool clipIsFb = clipX <= r.X && clipX + clipW >= r.X + r.W &&
                             clipY <= r.Y && clipY + clipH >= r.Y + r.H &&
-                            clipW - r.W <= FbSlackW && clipH - r.H <= FbSlackH;
-            if (clipInside) { bestStamp = r.Stamp; fbX = r.X; fbY = r.Y; fbW = r.W; fbH = r.H; }
-            else if (clipIsFb) { bestStamp = r.Stamp; fbX = clipX; fbY = clipY; fbW = clipW; fbH = clipH; }
+                            clipW - r.W <= FbSlackW && clipH - r.H <= FbSlackH * 2;
+            if (clipInside)
+            {
+                bestStamp = r.Stamp;
+                fbX = r.X; fbY = r.Y; fbW = r.W; fbH = Math.Max(r.H, clipH);
+            }
+            else if (clipIsFb)
+            {
+                bestStamp = r.Stamp;
+                fbX = clipX; fbY = clipY; fbW = clipW; fbH = clipH;
+            }
         }
-        return bestStamp < 0 ? null : GetOrCreateRt(fbX, fbY, fbW, fbH);
+        if (bestStamp < 0)
+        {
+            if (_classifyMissLog < 8)
+            {
+                _classifyMissLog++;
+                var msg = $"Classify MISS clip={clipX},{clipY} {clipW}x{clipH}";
+                Diagnostics.BootLog.Write(msg);
+                Console.WriteLine("[boot] " + msg);
+            }
+            return null;
+        }
+        return GetOrCreateRt(fbX, fbY, fbW, fbH);
     }
 
     GlDisplayRt GetOrCreateRt(int fbX, int fbY, int fbW, int fbH)
@@ -329,6 +382,13 @@ public sealed class GlBackend : IGpuBackend
     public void FillRect(int x, int y, int w, int h, ushort color15)
     {
         Flush();
+        if (_fillLog < 8)
+        {
+            _fillLog++;
+            var msg = $"FillRect xy={x},{y} {w}x{h} c=0x{color15:X4}";
+            Diagnostics.BootLog.Write(msg);
+            Console.WriteLine("[boot] " + msg);
+        }
         _vram.Fill(x, y, w, h, color15);
         foreach (var rt in _rts)
         {
@@ -342,6 +402,8 @@ public sealed class GlBackend : IGpuBackend
             else SyncRtFromVram(rt, x, y, w, h);
         }
     }
+
+    static int _fillLog;
 
     void FillRtFull(GlDisplayRt rt, ushort color15)
     {
@@ -381,22 +443,23 @@ public sealed class GlBackend : IGpuBackend
         if (_count == 0) return;
 
         var rt = _kTarget;
-        uint destTex;
         if (rt == null)
-        {
             _vram.BindDraw();
-            destTex = _vram.Texture;
-        }
         else
         {
             _gl.BindFramebuffer(FramebufferTarget.Framebuffer, rt.Fbo);
             _gl.Viewport(0, 0, (uint)rt.TexW, (uint)rt.TexH);
-            destTex = rt.Tex;
+            _gl.DrawBuffer(DrawBufferMode.ColorAttachment0);
         }
         _vram.Barrier();
 
+        // ImGui / present may leave write masks or tests that kill subsequent HLE draws.
+        _gl.ColorMask(true, true, true, true);
+        _gl.DepthMask(false);
         _gl.Disable(EnableCap.DepthTest);
         _gl.Disable(EnableCap.CullFace);
+        _gl.Disable(EnableCap.StencilTest);
+        _gl.Disable(EnableCap.Blend);
         _gl.Enable(EnableCap.ScissorTest);
         int s = GlVram.Scale;
         if (rt == null)
@@ -412,12 +475,32 @@ public sealed class GlBackend : IGpuBackend
             _gl.Scissor(cx0 * s, cy0 * s, (uint)Math.Max(0, (cx1 - cx0 + 1) * s), (uint)Math.Max(0, (cy1 - cy0 + 1) * s));
         }
 
+        // One-shot: prove the RT is writable before DrawArrays.
+        if (_flushDiag == 0 && rt != null)
+        {
+            _gl.Disable(EnableCap.ScissorTest);
+            _gl.ClearColor(0f, 1f, 0f, 1f);
+            _gl.Clear(ClearBufferMask.ColorBufferBit);
+            _gl.Enable(EnableCap.ScissorTest);
+        }
+
         _gl.UseProgram(_progPrim);
         _gl.BindVertexArray(_vao);
+        // NEVER bind a texture that is also the current color attachment.
         _gl.ActiveTexture(TextureUnit.Texture0);
-        _gl.BindTexture(TextureTarget.Texture2D, _vram.Texture);
+        _gl.BindTexture(TextureTarget.Texture2D, _dummyDestTex);
         _gl.ActiveTexture(TextureUnit.Texture1);
-        _gl.BindTexture(TextureTarget.Texture2D, destTex);
+        _gl.BindTexture(TextureTarget.Texture2D, _dummyDestTex);
+        // Textured prims need real VRAM — bind only when this batch can sample it
+        // AND we are not drawing into the VRAM FBO (feedback).
+        bool batchTextured = false;
+        for (int i = 0; i < _count; i++)
+            if ((_verts[i].Texpage & 0x8000) == 0) { batchTextured = true; break; }
+        if (batchTextured && rt != null)
+        {
+            _gl.ActiveTexture(TextureUnit.Texture0);
+            _gl.BindTexture(TextureTarget.Texture2D, _vram.Texture);
+        }
         _gl.ActiveTexture(TextureUnit.Texture0);
         if (rt != null)
         {
@@ -429,10 +512,10 @@ public sealed class GlBackend : IGpuBackend
             _gl.Uniform2(_uPosBias, 0f, 0f);
             _gl.Uniform2(_uFbInv, 2f / VramShadow.Width, 2f / VramShadow.Height);
         }
+        if (_uVertexOffset >= 0) _gl.Uniform2(_uVertexOffset, 0f, 0f);
         _gl.Uniform4(_uTexWindow, _kTwAndX, _kTwAndY, _kTwOrX, _kTwOrY);
-        _gl.Uniform1(_uSetMask, _kSetMask == 1 ? 1f : 0f);
-        _gl.Uniform1(_uCheckMask, _kCheckMask);
-        _gl.Uniform4(_uBlendOpaque, 1f, 1f, 1f, 0f);
+        _gl.Uniform1(_uSetMask, 1f);
+        _gl.Uniform1(_uCheckMask, 0);
 
         _gl.BindBuffer(BufferTargetARB.ArrayBuffer, _vbo);
         _gl.BufferSubData<GlVertex>(BufferTargetARB.ArrayBuffer, 0, _verts.AsSpan(0, _count));
@@ -444,34 +527,159 @@ public sealed class GlBackend : IGpuBackend
         }
         else
         {
+            // Approximate PS1 semi-trans with standard blend (no dual-source).
             _gl.Enable(EnableCap.Blend);
-            _gl.BlendFuncSeparate(BlendingFactor.Src1Color, BlendingFactor.Src1Alpha, BlendingFactor.One, BlendingFactor.Zero);
-            if (_kBlend == 2)
+            _gl.BlendEquation(BlendEquationModeEXT.FuncAdd);
+            switch (_kBlend)
             {
-                _gl.BlendEquation(BlendEquationModeEXT.FuncAdd);
-                SetBlend(0f, 1f);
-                _gl.DrawArrays(PrimitiveType.Triangles, 0, (uint)_count);
+                case 0: // B/2 + F/2
+                    _gl.BlendFunc(BlendingFactor.ConstantColor, BlendingFactor.ConstantColor);
+                    _gl.BlendColor(0.5f, 0.5f, 0.5f, 1f);
+                    break;
+                case 1: // B + F
+                    _gl.BlendFunc(BlendingFactor.One, BlendingFactor.One);
+                    break;
+                case 2: // B - F
+                    _gl.BlendEquation(BlendEquationModeEXT.FuncReverseSubtract);
+                    _gl.BlendFunc(BlendingFactor.One, BlendingFactor.One);
+                    break;
+                default: // B + F/4
+                    _gl.BlendFunc(BlendingFactor.ConstantColor, BlendingFactor.One);
+                    _gl.BlendColor(0.25f, 0.25f, 0.25f, 1f);
+                    break;
+            }
+            _gl.DrawArrays(PrimitiveType.Triangles, 0, (uint)_count);
+            _gl.BlendEquation(BlendEquationModeEXT.FuncAdd);
+        }
 
-                _vram.Barrier();
-                _gl.BlendEquationSeparate(BlendEquationModeEXT.FuncReverseSubtract, BlendEquationModeEXT.FuncAdd);
-                SetBlend(1f, 1f);
-                _gl.Uniform4(_uBlendOpaque, 0f, 0f, 0f, 1f);
-                _gl.DrawArrays(PrimitiveType.Triangles, 0, (uint)_count);
-            }
-            else
-            {
-                _gl.BlendEquation(BlendEquationModeEXT.FuncAdd);
-                SetBlend(_kBlend switch { 0 => 0.5f, 3 => 0.25f, _ => 1f }, _kBlend == 0 ? 0.5f : 1f);
-                _gl.DrawArrays(PrimitiveType.Triangles, 0, (uint)_count);
-            }
+        if (_flushDiag < 4 && rt != null)
+        {
+            _flushDiag++;
+            _gl.Finish();
+            int err = (int)_gl.GetError();
+            int sDiag = GlVram.Scale;
+            int px = (rt.Margin + rt.W / 2) * sDiag;
+            int py = (rt.H / 2) * sDiag;
+            var rgba = new byte[4];
+            _gl.BindFramebuffer(FramebufferTarget.ReadFramebuffer, rt.Fbo);
+            _gl.PixelStore(PixelStoreParameter.PackAlignment, 1);
+            _gl.ReadPixels(px, py, 1, 1, PixelFormat.Rgba, PixelType.UnsignedByte, rgba);
+            var v0 = _verts[0];
+            var msg = $"FlushDiag #{_flushDiag} n={_count} tex={batchTextured} err=0x{err:X} pix=({rgba[0]},{rgba[1]},{rgba[2]},{rgba[3]}) v0=({v0.X},{v0.Y}) c=0x{v0.Color:X6} tp=0x{v0.Texpage:X} bias=({rt.Margin - rt.X},{-rt.Y}) fb={rt.Wide1x}x{rt.H} sc={sDiag}";
+            Diagnostics.BootLog.Write(msg);
+            Console.WriteLine("[boot] " + msg);
         }
 
         _gl.Disable(EnableCap.ScissorTest);
         if (rt != null) { rt.Dirty = true; rt.LastDrawFrame = _frame; }
+        else
+        {
+            // Polys landed in full VRAM (Classify miss). Pull into any FB RT so Present
+            // does not keep showing the black FillRect that last touched LastDrawFrame.
+            int sw = _kClipX1 - _kClipX0 + 1, sh = _kClipY1 - _kClipY0 + 1;
+            if (sw > 0 && sh > 0)
+            {
+                SyncRtsFromVram(_kClipX0, _kClipY0, sw, sh);
+                foreach (var r in _rts)
+                {
+                    if (r != null && r.Intersects(_kClipX0, _kClipY0, sw, sh))
+                        r.LastDrawFrame = _frame;
+                }
+            }
+        }
         _count = 0;
     }
 
-    void SetBlend(float src, float dst) => _gl.Uniform4(_uBlend, src, src, src, dst);
+    static int _latchLog;
+
+    public void LatchFrame()
+    {
+        Flush();
+
+        GlDisplayRt? src = Classify();
+        if (src == null)
+        {
+            foreach (var rt in _rts)
+            {
+                if (rt == null || rt.W < 320 || rt.H < 160) continue;
+                if (src == null || rt.LastDrawFrame > src.LastDrawFrame) src = rt;
+            }
+        }
+        if (src == null) return;
+
+        // Blit the RT we just drew straight into _presentTex (no VRAM round-trip).
+        int dispH = Math.Min(src.H, 224);
+        BakePresentFromRt(src, dispH);
+        if (src.Dirty) Writeback(src);
+
+        if (_latchLog < 8)
+        {
+            _latchLog++;
+            int s = GlVram.Scale;
+            int px = (src.Margin + src.W / 2) * s;
+            int py = (dispH / 2) * s;
+            var rgba = new byte[4];
+            _gl.BindFramebuffer(FramebufferTarget.ReadFramebuffer, src.Fbo);
+            _gl.PixelStore(PixelStoreParameter.PackAlignment, 1);
+            _gl.ReadPixels(px, py, 1, 1, PixelFormat.Rgba, PixelType.UnsignedByte, rgba);
+            _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+            var msg = $"LatchFrame rt={src.X},{src.Y} {src.W}x{src.H} rtPix=({rgba[0]},{rgba[1]},{rgba[2]},{rgba[3]}) snap={_snapW}x{_snapH}";
+            Diagnostics.BootLog.Write(msg);
+            Console.WriteLine("[boot] " + msg);
+        }
+    }
+
+    void BakePresentFromRt(GlDisplayRt rt, int dispH)
+    {
+        int s = GlVram.Scale;
+        int srcX0 = rt.Margin * s;
+        int srcY0 = 0;
+        int srcX1 = (rt.Margin + rt.W) * s;
+        int srcY1 = Math.Min(dispH, rt.H) * s;
+        int fbW = srcX1 - srcX0;
+        int fbH = srcY1 - srcY0;
+        if (GpuHle.NativeResolution) { fbW = rt.W; fbH = Math.Min(dispH, rt.H); }
+        EnsurePresentSize(fbW, fbH, GpuHle.NativeResolution);
+
+        _gl.Disable(EnableCap.ScissorTest);
+        _gl.BindFramebuffer(FramebufferTarget.ReadFramebuffer, rt.Fbo);
+        _gl.BindFramebuffer(FramebufferTarget.DrawFramebuffer, _presentFbo);
+        _gl.BlitFramebuffer(
+            srcX0, srcY0, srcX1, srcY1,
+            0, 0, fbW, fbH,
+            ClearBufferMask.ColorBufferBit,
+            GpuHle.NativeResolution ? BlitFramebufferFilter.Linear : BlitFramebufferFilter.Nearest);
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+
+        _snapValid = true;
+        _snapW = fbW;
+        _snapH = fbH;
+        _snapAspect = rt.Margin > 0 ? GpuHle.WideAspect : GpuHle.OutputAspect;
+    }
+
+    void BakePresentFromVram(int x, int y, int w, int h)
+    {
+        if (w <= 0 || h <= 0) return;
+        int s = GlVram.Scale;
+        int presentScale = GpuHle.NativeResolution ? 1 : s;
+        int fbW = w * presentScale;
+        int fbH = h * presentScale;
+        EnsurePresentSize(fbW, fbH, GpuHle.NativeResolution);
+
+        _gl.Disable(EnableCap.ScissorTest);
+        _gl.BindFramebuffer(FramebufferTarget.ReadFramebuffer, _vram.Fbo);
+        _gl.BindFramebuffer(FramebufferTarget.DrawFramebuffer, _presentFbo);
+        _gl.BlitFramebuffer(
+            x * s, y * s, (x + w) * s, (y + h) * s,
+            0, 0, fbW, fbH,
+            ClearBufferMask.ColorBufferBit, BlitFramebufferFilter.Nearest);
+        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
+
+        _snapValid = true;
+        _snapW = fbW;
+        _snapH = fbH;
+        _snapAspect = GpuHle.OutputAspect;
+    }
 
     public void Present(in HleDispEnv disp) => PresentDisplay(disp.X, disp.Y, disp.W, disp.H, disp.Rgb24);
 
@@ -484,72 +692,71 @@ public sealed class GlBackend : IGpuBackend
         for (int i = 0; i < _rts.Length; i++)
         {
             if (_rts[i] is not { } rt) continue;
-            if (rt.Dirty) Writeback(rt);
             if (_frame - rt.LastDrawFrame > 300)
             {
+                if (rt.Dirty) Writeback(rt);
                 rt.Destroy(_gl);
                 _rts[i] = null;
             }
         }
 
-        GlDisplayRt? src = null;
+        // Prefer LatchFrame snap — completed OT, immune to the next FillRect.
+        if (!rgb24 && _snapValid)
+        {
+            if (_presentLog < 12 || (_frame % 60) == 0)
+            {
+                string rts = string.Join(',', _rts.Select(r => r == null ? "-" : $"{r.X},{r.Y} {r.W}x{r.H} d={_frame - r.LastDrawFrame}"));
+                var msg = $"Present SNAP {_snapW}x{_snapH} rts=[{rts}] frame={_frame}";
+                Diagnostics.BootLog.Write(msg);
+                if (_presentLog < 12)
+                {
+                    Console.WriteLine("[boot] " + msg);
+                    _presentLog++;
+                }
+            }
+            return (_presentTex, _snapW, _snapH, _snapAspect);
+        }
+
         if (!rgb24)
+        {
+            GlDisplayRt? src = null;
             foreach (var rt in _rts)
             {
                 if (rt == null || _frame - rt.LastDrawFrame > 90) continue;
-                if (dispX < rt.X || dispY < rt.Y || dispX + w > rt.X + rt.W || dispY + h > rt.Y + rt.H) continue;
+                if (dispX < rt.X || dispY < rt.Y) continue;
+                if (dispX >= rt.X + rt.W || dispY >= rt.Y + rt.H) continue;
                 if (src == null || rt.LastDrawFrame > src.LastDrawFrame) src = rt;
             }
-
-        if (_presentLog < 2 || _frame == 60)
-        {
-            string rts = string.Join(',', _rts.Select(r => r == null ? "-" : $"{r.X},{r.Y} {r.W}x{r.H} d={_frame - r.LastDrawFrame}"));
-            Diagnostics.BootLog.Write($"Present disp={dispX},{dispY} {w}x{h} src={(src == null ? "vram" : $"{src.X},{src.Y}")} rts=[{rts}] frame={_frame}");
-            if (_presentLog < 2) _presentLog++;
+            if (src == null)
+            {
+                foreach (var rt in _rts)
+                {
+                    if (rt == null || _frame - rt.LastDrawFrame > 90) continue;
+                    if (rt.W < 320 || rt.H < 160) continue;
+                    if (src == null || rt.LastDrawFrame > src.LastDrawFrame) src = rt;
+                }
+            }
+            if (src != null)
+            {
+                BakePresentFromRt(src, Math.Min(Math.Min(h, src.H), 224));
+                if (_presentLog < 12 || (_frame % 60) == 0)
+                {
+                    var msg = $"Present rt={src.X},{src.Y} snap={_snapW}x{_snapH} frame={_frame}";
+                    Diagnostics.BootLog.Write(msg);
+                    if (_presentLog < 12) { Console.WriteLine("[boot] " + msg); _presentLog++; }
+                }
+                return (_presentTex, _snapW, _snapH, _snapAspect);
+            }
         }
 
-        int w1x = src != null ? w + src.Margin * 2 : w;
-        int h1x = h;
-        float aspect = src is { Margin: > 0 } ? GpuHle.WideAspect : GpuHle.OutputAspect;
-
-
-        int presentScale = GpuHle.NativeResolution ? 1 : GlVram.Scale;
-        int fbW = w1x * presentScale;
-        int fbH = h1x * presentScale;
-        EnsurePresentSize(fbW, fbH, GpuHle.NativeResolution);
-
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, _presentFbo);
-        _gl.Viewport(0, 0, (uint)fbW, (uint)fbH);
-        _gl.Disable(EnableCap.DepthTest);
-        _gl.Disable(EnableCap.Blend);
-        _gl.Disable(EnableCap.ScissorTest);
-        _gl.Disable(EnableCap.CullFace);
-
-        _gl.UseProgram(rgb24 ? _progPresent24 : _progPresent);
-        _gl.BindVertexArray(_presentVao);
-        _gl.ActiveTexture(TextureUnit.Texture0);
-        _gl.BindTexture(TextureTarget.Texture2D, src?.Tex ?? _vram.Texture);
-        if (rgb24)
+        BakePresentFromVram(dispX, dispY, w, h);
+        if (_presentLog < 12 || (_frame % 60) == 0)
         {
-            _gl.Uniform2(_uPresent24Origin, (float)dispX, dispY);
-            _gl.Uniform2(_uPresent24Size, (float)w, h);
+            var msg = $"Present vram={dispX},{dispY} {w}x{h} snap={_snapW}x{_snapH} frame={_frame}";
+            Diagnostics.BootLog.Write(msg);
+            if (_presentLog < 12) { Console.WriteLine("[boot] " + msg); _presentLog++; }
         }
-        else if (src != null)
-        {
-            _gl.Uniform2(_uPresentOrigin, (float)(dispX - src.X), dispY - src.Y);
-            _gl.Uniform2(_uPresentSize, (float)w1x, h1x);
-            _gl.Uniform2(_uPresentTexSize, (float)src.Wide1x, src.H);
-        }
-        else
-        {
-            _gl.Uniform2(_uPresentOrigin, (float)dispX, dispY);
-            _gl.Uniform2(_uPresentSize, (float)w, h);
-            _gl.Uniform2(_uPresentTexSize, (float)VramShadow.Width, VramShadow.Height);
-        }
-        _gl.DrawArrays(PrimitiveType.TriangleStrip, 0, 4);
-
-        _gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
-        return (_presentTex, fbW, fbH, aspect);
+        return (_presentTex, _snapW, _snapH, _snapAspect);
     }
 
     unsafe void EnsurePresentSize(int w, int h, bool nearest)
@@ -575,6 +782,7 @@ public sealed class GlBackend : IGpuBackend
         if (_progPresent != 0) _gl.DeleteProgram(_progPresent);
         if (_progPresent24 != 0) _gl.DeleteProgram(_progPresent24);
         if (_presentTex != 0) _gl.DeleteTexture(_presentTex);
+        if (_dummyDestTex != 0) _gl.DeleteTexture(_dummyDestTex);
         if (_presentFbo != 0) _gl.DeleteFramebuffer(_presentFbo);
     }
 }

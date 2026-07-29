@@ -107,10 +107,16 @@ public static class BiosB
     const uint PadFlagsAddr = 0x8006CE2Cu; // 0x80070000 - 0x31D4
     const uint CamModeAddr = 0x8006CE4Cu;  // 0x80070000 - 0x31B4
     const uint LevelInfoPtrAddr = 0x80067834u;
+    /// <summary>DrawOTag hold — retail writes -1 to freeze GPU submit until cleared.</summary>
+    const uint DrawHoldAddr = 0x80067844u; // 0x80060000 + 0x7844
+    /// <summary>Incremented at the start of <c>func_8001658C</c> (GPU submit helper).</summary>
+    const uint DrawFrameCounterAddr = 0x8006CF88u; // 0x80070000 - 0x3078
 
     static ushort _lastLoggedState = 0xFFFF;
     static int _padEdgeLogs;
     static int _titleDiagLogs;
+    static bool _drawHoldUnstuckLogged;
+    static int _introHoldStuckFrames;
 
     static void PadRead(IMemory m)
     {
@@ -158,11 +164,50 @@ public static class BiosB
     /// </summary>
     public static void SynthTitlePadEdges(IMemory m)
     {
+        // Runs every PresentPump (even after Intro) so a sticky DrawHold can be cleared.
+        if (_padStarted) TryUnstickDrawHold(m);
+
         if (!_padStarted || m.ReadU32(GameModeAddr) != 0xFFFFFFFFu) return;
         if (_padBuf1 != 0) SynthDigitalPadEdges(m, _padBuf1);
         if (_padBuf2 != 0) SynthDigitalPadEdges(m, _padBuf2);
         LogPadIfChanged(m);
         TryHleTitleStart(m);
+    }
+
+    /// <summary>
+    /// Intro can leave <c>0x80067844</c> sticky so <c>DrawOTag</c> is skipped.
+    /// HLE title→Intro also writes mode and the guest path stores hold=2 briefly;
+    /// clear any non-zero hold while level is Intro so submit resumes immediately.
+    /// </summary>
+    static void TryUnstickDrawHold(IMemory m)
+    {
+        uint level = m.ReadU32(LevelIdAddr);
+        uint mode = m.ReadU32(GameModeAddr);
+        bool intro = level == LevelIntro || mode == LevelIntro;
+        if (!intro)
+        {
+            _introHoldStuckFrames = 0;
+            return;
+        }
+
+        uint hold = m.ReadU32(DrawHoldAddr);
+        if (hold == 0u)
+        {
+            _introHoldStuckFrames = 0;
+            return;
+        }
+
+        _introHoldStuckFrames++;
+        m.WriteU32(DrawHoldAddr, 0u);
+        if (!_drawHoldUnstuckLogged)
+        {
+            _drawHoldUnstuckLogged = true;
+            var msg = $"HLE clear DrawHold @ 0x80067844 (was 0x{hold:X8}) for Intro DrawOTag";
+            Console.WriteLine("[boot] " + msg);
+            Diagnostics.BootLog.Write(msg);
+        }
+        // Allow fresh DrawOTag logs after title spam filled the budget.
+        RecompOne.Runtime.Sdk.LibGpu.ResetDrawLogBudget();
     }
 
     static void TryHleTitleStart(IMemory m)
@@ -171,6 +216,10 @@ public static class BiosB
         uint tap = _padBuf1 != 0 ? m.ReadU32(_padBuf1 + 0x24) : 0;
         if ((tap & (CrashStart | CrashCross)) == 0) return;
         m.WriteU32(GameModeAddr, LevelIntro);
+        // Mode-change path stores hold=2; don't enter Intro with DrawOTag gated.
+        m.WriteU32(DrawHoldAddr, 0u);
+        RecompOne.Runtime.Sdk.LibGpu.ResetDrawLogBudget();
+        Gpu.ResetTriLog();
         var msg = $"title HLE Start/Cross -> mode=0x{LevelIntro:X} (Intro)";
         Console.WriteLine("[boot] " + msg);
         Diagnostics.BootLog.Write(msg);
@@ -178,18 +227,28 @@ public static class BiosB
 
     public static void LogTitleState(IMemory m)
     {
-        if (_titleDiagLogs >= 8) return;
+        if (_titleDiagLogs >= 12) return;
         _titleDiagLogs++;
         uint mode = m.ReadU32(GameModeAddr);
         uint level = m.ReadU32(LevelIdAddr);
         uint world = m.ReadU32(WorldAddr);
         uint flags = m.ReadU32(PadFlagsAddr);
         uint cam = m.ReadU32(CamModeAddr);
+        uint hold = m.ReadU32(DrawHoldAddr);
+        uint drawFrames = m.ReadU32(DrawFrameCounterAddr);
         uint info = m.ReadU32(LevelInfoPtrAddr);
         uint type = info != 0 ? m.ReadU32(info + 0x8u) : 0;
         uint tap = _padBuf1 != 0 ? m.ReadU32(_padBuf1 + 0x24) : 0;
         uint held = _padBuf1 != 0 ? m.ReadU32(_padBuf1 + 0x28) : 0;
-        var msg = $"title mode=0x{mode:X8} level=0x{level:X} world=0x{world:X8} flags=0x{flags:X8} cam=0x{cam:X8} type=0x{type:X} held=0x{held:X4} tap=0x{tap:X4}";
+        // 3D-submit gate: flags bit0 and *(**0x80060B64 + 0x10)
+        uint objList = 0;
+        uint p0 = m.ReadU32(0x80060B64u);
+        if (p0 != 0)
+        {
+            uint p1 = m.ReadU32(p0 + 0x10u);
+            if (p1 != 0) objList = m.ReadU32(p1);
+        }
+        var msg = $"title mode=0x{mode:X8} level=0x{level:X} world=0x{world:X8} flags=0x{flags:X8} cam=0x{cam:X8} hold=0x{hold:X8} drawF={drawFrames} objs=0x{objList:X8} type=0x{type:X} held=0x{held:X4} tap=0x{tap:X4}";
         Console.WriteLine("[boot] " + msg);
         Diagnostics.BootLog.Write(msg);
     }

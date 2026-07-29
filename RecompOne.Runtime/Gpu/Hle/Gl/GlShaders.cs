@@ -102,14 +102,13 @@ internal static class GlShaders
         flat in int   texMode;
         flat in int   vDither;
 
-        layout(location = 0, index = 0) out vec4 FragColor;
-        layout(location = 0, index = 1) out vec4 BlendColor;
+        // Single output — dual-source (index=1) was discarding all draws on this GL stack
+        // (LatchFrame rtPix stayed 0,0,0,0 even after fullscreen white quads).
+        layout(location = 0) out vec4 FragColor;
 
         uniform sampler2D uVram;
         uniform sampler2D uDest;
         uniform ivec4 uTexWindow;
-        uniform vec4  uBlend;
-        uniform vec4  uBlendOpaque = vec4(1.0, 1.0, 1.0, 0.0);
         uniform float uSetMask;
         uniform int   uCheckMask;
         uniform int   uScale;
@@ -136,13 +135,14 @@ internal static class GlShaders
         }
 
         void main() {
-            if (uCheckMask != 0 && texelFetch(uDest, ivec2(gl_FragCoord.xy), 0).a >= 0.5) discard;
-
+            // Untextured first — never touch samplers (some drivers discard the whole
+            // draw if a bound sampler is also an FBO attachment, even on unused paths).
             if (texMode == 4) {
-                FragColor = vec4(quant5(ivec3(vColor.rgb * 255.0 + 0.5)), uSetMask);
-                BlendColor = uBlend;
+                FragColor = vec4(quant5(ivec3(vColor.rgb * 255.0 + 0.5)), 1.0);
                 return;
             }
+
+            if (uCheckMask != 0 && texelFetch(uDest, ivec2(gl_FragCoord.xy), 0).a >= 0.5) discard;
 
             int rawU = dFdx(vUV.x) < 0.0 ? int(ceil(vUV.x - 0.0001)) : int(floor(vUV.x + 0.0001));
             int rawV = dFdy(vUV.y) < 0.0 ? int(ceil(vUV.y - 0.0001)) : int(floor(vUV.y + 0.0001));
@@ -165,8 +165,7 @@ internal static class GlShaders
             if (texel.rgb == vec3(0.0) && texel.a < 0.5) discard;
             ivec3 t8 = ivec3(texel.rgb * 31.0 + 0.5) << 3;
             ivec3 c8 = (t8 * ivec3(vColor.rgb * 255.0 + 0.5)) >> 7;
-            FragColor = vec4(quant5(c8), max(texel.a, uSetMask));
-            BlendColor = texel.a >= 0.5 ? uBlend : uBlendOpaque;
+            FragColor = vec4(quant5(c8), max(texel.a, max(uSetMask, 1.0)));
         }
         """;
 

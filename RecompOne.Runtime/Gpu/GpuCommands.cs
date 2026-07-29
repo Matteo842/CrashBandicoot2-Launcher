@@ -87,7 +87,7 @@ public sealed partial class Gpu
         int y = (int)((_fifo[1] >> 16) & 0x1FF);
         int w = (int)(((_fifo[2] & 0x3FF) + 0xF) & ~0xF);
         int h = (int)((_fifo[2] >> 16) & 0x1FF);
-        if (HleOn) { HleFill(x, y, w, h, color); return; }
+        if (HleOn) HleFill(x, y, w, h, color);
 
         for (int dy = 0; dy < h; dy++)
             for (int dx = 0; dx < w; dx++)
@@ -104,7 +104,7 @@ public sealed partial class Gpu
         int dx = (int)(_fifo[2] & 0x3FF), dy = (int)((_fifo[2] >> 16) & 0x1FF);
         int w = (int)(_fifo[3] & 0x3FF); if (w == 0) w = 0x400;
         int h = (int)((_fifo[3] >> 16) & 0x1FF); if (h == 0) h = 0x200;
-        if (HleOn) { HleCopy(sx, sy, dx, dy, w, h); return; }
+        if (HleOn) HleCopy(sx, sy, dx, dy, w, h);
         for (int row = 0; row < h; row++)
             for (int col = 0; col < w; col++)
             {
@@ -140,7 +140,7 @@ public sealed partial class Gpu
     {
         if (!_loadImage) return;
         ushort stored = _setMask ? (ushort)(value | 0x8000) : value;
-        if (!HleOn)   // gl mode uploads to gl vram via HleLoadPut
+        // Always mirror into CPU VRAM — soft raster (and soft present) need it even when HLE is on.
         {
             int x = (_loadX + (_loadPx % _loadW)) & (VramWidth - 1);
             int y = (_loadY + (_loadPx / _loadW)) & (VramHeight - 1);
