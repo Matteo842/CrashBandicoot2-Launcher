@@ -19,6 +19,9 @@ public static class BiosB
     public static uint IntrEnvInInterruptAddr = 0u;
 
     static uint _padBuf;
+    static uint _padBuf1, _padBuf2;
+    static int _padSiz1 = 0x22, _padSiz2 = 0x22;
+    static bool _padStarted;
 
     public static void DeliverEvent(uint @class, uint spec)
     {
@@ -98,6 +101,19 @@ public static class BiosB
 
     static void PadRead(IMemory m)
     {
+        // Modern InitPAD path: separate 0x22-byte buffers per port.
+        if (_padStarted && (_padBuf1 != 0 || _padBuf2 != 0))
+        {
+            if (_padBuf1 != 0) WriteInitPadBuf(m, _padBuf1, 0, Hardware.Controller.State,
+                Hardware.Controller.RightX, Hardware.Controller.RightY,
+                Hardware.Controller.LeftX, Hardware.Controller.LeftY);
+            if (_padBuf2 != 0) WriteInitPadBuf(m, _padBuf2, 1, Hardware.Controller.State2,
+                Hardware.Controller.RightX2, Hardware.Controller.RightY2,
+                Hardware.Controller.LeftX2, Hardware.Controller.LeftY2);
+            return;
+        }
+
+        // Legacy PAD_init single-buffer path.
         if (_padBuf == 0) return;
         ushort s = Hardware.Controller.State;
         ushort swapped = (ushort)((s >> 8) | (s << 8));
@@ -105,11 +121,25 @@ public static class BiosB
         ushort swapped2 = (ushort)((s2 >> 8) | (s2 << 8));
         swapped = FirePad(m, 0, swapped);
         swapped2 = FirePad(m, 1, swapped2);
-        m.WriteU32(_padBuf,     ((uint)swapped2 << 16) | swapped);
+        m.WriteU32(_padBuf, ((uint)swapped2 << 16) | swapped);
         m.WriteU8(_padBuf + 4, Hardware.Controller.RightX);
         m.WriteU8(_padBuf + 5, Hardware.Controller.RightY);
         m.WriteU8(_padBuf + 6, Hardware.Controller.LeftX);
         m.WriteU8(_padBuf + 7, Hardware.Controller.LeftY);
+    }
+
+    static void WriteInitPadBuf(IMemory m, uint buf, int port, ushort buttons,
+        byte rx, byte ry, byte lx, byte ly)
+    {
+        ushort b = FirePad(m, port, buttons);
+        m.WriteU8(buf + 0, 0x00); // ok
+        m.WriteU8(buf + 1, 0x41); // digital / standard
+        m.WriteU8(buf + 2, (byte)(b & 0xFF));
+        m.WriteU8(buf + 3, (byte)(b >> 8));
+        m.WriteU8(buf + 4, rx);
+        m.WriteU8(buf + 5, ry);
+        m.WriteU8(buf + 6, lx);
+        m.WriteU8(buf + 7, ly);
     }
 
     public static void RefreshPad(IMemory m) => PadRead(m);
@@ -136,9 +166,30 @@ public static class BiosB
             case 0x0F: CloseTh(c.A0); c.V0 = 1u; break;
             case 0x10: break;
             case 0x11: break;
-            case 0x12: break;
-            case 0x13: break;
-            case 0x14: break;
+            case 0x12: // InitPAD(buf1, siz1, buf2, siz2)
+            {
+                _padBuf1 = c.A0;
+                _padSiz1 = (int)c.A1;
+                _padBuf2 = c.A2;
+                _padSiz2 = (int)c.A3;
+                if (_padBuf1 != 0 && _padSiz1 > 0)
+                    for (int i = 0; i < _padSiz1; i++) m.WriteU8(_padBuf1 + (uint)i, 0xFF);
+                if (_padBuf2 != 0 && _padSiz2 > 0)
+                    for (int i = 0; i < _padSiz2; i++) m.WriteU8(_padBuf2 + (uint)i, 0xFF);
+                Diagnostics.BootLog.Write($"InitPAD buf1=0x{_padBuf1:X8}/{_padSiz1} buf2=0x{_padBuf2:X8}/{_padSiz2}");
+                c.V0 = 1u;
+                break;
+            }
+            case 0x13: // StartPAD
+                _padStarted = true;
+                PadRead(m);
+                Diagnostics.BootLog.Write("StartPAD");
+                c.V0 = 1u;
+                break;
+            case 0x14: // StopPAD
+                _padStarted = false;
+                c.V0 = 1u;
+                break;
             case 0x15: _padBuf = c.A1; break;
             case 0x16: PadRead(m); break;
             case 0x17: break;
