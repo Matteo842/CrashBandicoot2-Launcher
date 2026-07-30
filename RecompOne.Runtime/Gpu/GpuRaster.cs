@@ -7,6 +7,21 @@ public sealed partial class Gpu
 {
     struct Vert { public int X, Y, R, G, B, U, V; }
 
+    // Soft-path drop census — read+reset from LibGpu census points.
+    public static long StatPoly, StatPolyDropSpan, StatPolyDropArea, StatPolyDropClip, StatPixels, StatRect, StatLineSeg;
+    static int _polyDumpLeft;
+    public static void ResetSoftStats()
+    {
+        StatPoly = StatPolyDropSpan = StatPolyDropArea = StatPolyDropClip = StatPixels = StatRect = StatLineSeg = 0;
+        _polyDumpLeft = 6;
+    }
+    public static void DumpSoftStats()
+    {
+        var msg = $"softStats poly={StatPoly} dropSpan={StatPolyDropSpan} dropArea={StatPolyDropArea} dropClip={StatPolyDropClip} px={StatPixels} rect={StatRect} line={StatLineSeg}";
+        Console.WriteLine("[boot] " + msg);
+        Diagnostics.BootLog.Write(msg);
+    }
+
     static readonly RenderPrimEvent _primEvent = new();
 
     static readonly int[,] Dither =
@@ -68,6 +83,35 @@ public sealed partial class Gpu
             for (int i = 0; i < n; i++) { v[i].X = e.X[i]; v[i].Y = e.Y[i]; }
         }
 
+        // Skip Crash intro fade-wipe: OT often ends with GP0 0x2AFFFFFF (white semi
+        // quad) after an E1 that selects blend mode 2 (B-F). Subtracting white from
+        // the just-drawn mesh zeros the entire draw buffer — Output stays black while
+        // SoftSnap refuses the empty latch. Retail advances the fade; our GOOL tick is
+        // still stuck on this OT, so skip the wipe so the mesh remains visible.
+        if (semi && !tex && !gouraud && cr >= 0xF8 && cg >= 0xF8 && cb >= 0xF8 && _blendMode == 2)
+        {
+            int minX = Math.Min(Math.Min(v[0].X, v[1].X), v[2].X);
+            int maxX = Math.Max(Math.Max(v[0].X, v[1].X), v[2].X);
+            int minY = Math.Min(Math.Min(v[0].Y, v[1].Y), v[2].Y);
+            int maxY = Math.Max(Math.Max(v[0].Y, v[1].Y), v[2].Y);
+            if (quad)
+            {
+                minX = Math.Min(minX, v[3].X); maxX = Math.Max(maxX, v[3].X);
+                minY = Math.Min(minY, v[3].Y); maxY = Math.Max(maxY, v[3].Y);
+            }
+            if (maxX - minX >= 320 && maxY - minY >= 160)
+            {
+                if (_wipeSkipLog < 3)
+                {
+                    _wipeSkipLog++;
+                    var skip = $"skip wipe cmd=0x{cmd >> 24:X2} blend={_blendMode} c={cr},{cg},{cb} xy={minX},{minY}-{maxX},{maxY}";
+                    Console.WriteLine("[boot] " + skip);
+                    Diagnostics.BootLog.Write(skip);
+                }
+                return;
+            }
+        }
+
         if (HleOn)
         {
             HleTri(v[0], v[1], v[2], tex, gouraud, semi, raw, clut);
@@ -75,6 +119,15 @@ public sealed partial class Gpu
         }
         else
         {
+            StatPoly++;
+            SoftLastPolyAt = SoftCmdIndex;
+            if (_polyDumpLeft > 0)
+            {
+                _polyDumpLeft--;
+                var msg = $"poly cmd=0x{cmd >> 24:X2} clip={_drawAreaLeft},{_drawAreaTop}-{_drawAreaRight},{_drawAreaBottom} ofs={_drawOffsetX},{_drawOffsetY} v=({v[0].X},{v[0].Y})({v[1].X},{v[1].Y})({v[2].X},{v[2].Y}) c0={v[0].R},{v[0].G},{v[0].B}";
+                Console.WriteLine("[boot] " + msg);
+                Diagnostics.BootLog.Write(msg);
+            }
             RasterTriangle(v[0], v[1], v[2], tex, gouraud, semi, raw, clut);
             if (quad) RasterTriangle(v[1], v[2], v[3], tex, gouraud, semi, raw, clut);
         }
@@ -84,17 +137,17 @@ public sealed partial class Gpu
     {
         int spanX = Math.Max(a.X, Math.Max(b.X, c.X)) - Math.Min(a.X, Math.Min(b.X, c.X));
         int spanY = Math.Max(a.Y, Math.Max(b.Y, c.Y)) - Math.Min(a.Y, Math.Min(b.Y, c.Y));
-        if (spanX > 1023 || spanY > 511) return;
+        if (spanX > 1023 || spanY > 511) { StatPolyDropSpan++; return; }
 
         long area = (long)(b.X - a.X) * (c.Y - a.Y) - (long)(b.Y - a.Y) * (c.X - a.X);
-        if (area == 0) return;
+        if (area == 0) { StatPolyDropArea++; return; }
         if (area < 0) { (b, c) = (c, b); area = -area; }
 
         int minX = Math.Max(_drawAreaLeft, Math.Min(a.X, Math.Min(b.X, c.X)));
         int maxX = Math.Min(_drawAreaRight, Math.Max(a.X, Math.Max(b.X, c.X)));
         int minY = Math.Max(_drawAreaTop, Math.Min(a.Y, Math.Min(b.Y, c.Y)));
         int maxY = Math.Min(_drawAreaBottom, Math.Max(a.Y, Math.Max(b.Y, c.Y)));
-        if (minX > maxX || minY > maxY) return;
+        if (minX > maxX || minY > maxY) { StatPolyDropClip++; return; }
 
         int bias0 = IsTopLeft(b, c) ? 0 : -1;
         int bias1 = IsTopLeft(c, a) ? 0 : -1;
@@ -187,6 +240,7 @@ public sealed partial class Gpu
         }
         if (HleOn) { HleRect(x, y, w, h, u0, v0, clut, cr, cg, cb, tex, semi, raw); return; }
 
+        StatRect++;
         for (int dy = 0; dy < h; dy++)
             for (int dx = 0; dx < w; dx++)
             {
@@ -250,6 +304,7 @@ public sealed partial class Gpu
         x0 += _drawOffsetX; y0 += _drawOffsetY;
         x1 += _drawOffsetX; y1 += _drawOffsetY;
         if (HleOn) { HleLine(x0, y0, r0, g0, b0, x1, y1, r1, g1, b1, semi, gouraud); return; }
+        StatLineSeg++;
         int dx = Math.Abs(x1 - x0), dy = Math.Abs(y1 - y0);
         int steps = Math.Max(dx, dy);
         if (steps == 0) { Plot(x0, y0, r0, g0, b0, semi, _dither); return; }
@@ -324,6 +379,7 @@ public sealed partial class Gpu
         ushort outp = (ushort)(fr | (fg << 5) | (fb << 10));
         if (_setMask || maskBit) outp |= 0x8000;
         Vram[idx] = outp;
+        StatPixels++;
     }
 
     void SetTexpageFromWord(uint tp)

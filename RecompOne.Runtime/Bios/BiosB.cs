@@ -116,6 +116,7 @@ public static class BiosB
     static int _padEdgeLogs;
     static int _titleDiagLogs;
     static bool _drawHoldUnstuckLogged;
+    static bool _introModeForcedLogged;
     static int _introHoldStuckFrames;
 
     static void PadRead(IMemory m)
@@ -190,6 +191,10 @@ public static class BiosB
             return;
         }
 
+        // NOTE: do NOT force mode=0x1C here — mode==0x1C means "load intro" to the
+        // game state machine; pinning it loops the level load and gates DrawOTag.
+        // mode==-1 during the cutscene is correct retail behaviour.
+
         uint hold = m.ReadU32(DrawHoldAddr);
         if (hold == 0u)
         {
@@ -220,6 +225,8 @@ public static class BiosB
         m.WriteU32(DrawHoldAddr, 0u);
         RecompOne.Runtime.Sdk.LibGpu.ResetDrawLogBudget();
         Gpu.ResetTriLog();
+        // Drop title starfield snap so Output can pick up Intro frames.
+        Runtime.Gpu?.InvalidateSoftSnap();
         var msg = $"title HLE Start/Cross -> mode=0x{LevelIntro:X} (Intro)";
         Console.WriteLine("[boot] " + msg);
         Diagnostics.BootLog.Write(msg);

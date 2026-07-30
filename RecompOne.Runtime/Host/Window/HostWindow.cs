@@ -344,23 +344,41 @@ public static class HostWindow
     static int _softPresentLog;
     static void UploadDisplayTexture(GL gl, Gpu gpu)
     {
+        // Prefer completed DrawOTag snap (stable). Fall back to live + other-half heuristic.
+        if (gpu.SoftSnapValid && gpu.SoftSnapW > 0 && gpu.SoftSnapH > 0
+            && gpu.SoftSnapRgb.Length >= gpu.SoftSnapW * gpu.SoftSnapH * 3)
+        {
+            int sw = gpu.SoftSnapW, sh = gpu.SoftSnapH;
+            if (_softPresentLog < 8)
+            {
+                _softPresentLog++;
+                var msg = $"softPresent snap={gpu.SoftSnapX},{gpu.SoftSnapY} {sw}x{sh}";
+                Diagnostics.BootLog.Write(msg);
+                Console.WriteLine("[boot] " + msg);
+            }
+            gl.BindTexture(TextureTarget.Texture2D, _displayTex);
+            gl.TexImage2D<byte>(TextureTarget.Texture2D, 0, InternalFormat.Rgb, (uint)sw, (uint)sh, 0,
+                PixelFormat.Rgb, PixelType.UnsignedByte, gpu.SoftSnapRgb.AsSpan(0, sw * sh * 3));
+            OutputPanel.SetTexture(_displayTex, sw, sh);
+            return;
+        }
+
         int w = gpu.DisplayWidth, h = gpu.DisplayHeight;
         if (!gpu.DisplayEnabled || w <= 0 || h <= 0) return;
 
-        // If the current display start is empty, try the other double-buffer half
-        // (common when Present lands mid-swap).
         int dx = gpu.DisplayX, dy = gpu.DisplayY;
-        int nz = CountNz(gpu.Vram, dx, dy, Math.Min(w, 64), Math.Min(h, 64));
+        int sampleW = Math.Min(w, 64), sampleH = Math.Min(h, 64);
+        int nz = CountNz(gpu.Vram, dx, dy, sampleW, sampleH);
         if (nz == 0)
         {
             int ox = dx >= 512 ? 0 : 512;
-            int nz2 = CountNz(gpu.Vram, ox, dy, Math.Min(w, 64), Math.Min(h, 64));
+            int nz2 = CountNz(gpu.Vram, ox, dy, sampleW, sampleH);
             if (nz2 > nz) { dx = ox; nz = nz2; }
         }
         if (_softPresentLog < 8)
         {
             _softPresentLog++;
-            var msg = $"softPresent disp={gpu.DisplayX},{gpu.DisplayY}->{dx},{dy} {w}x{h} nz64={nz}";
+            var msg = $"softPresent live={gpu.DisplayX},{gpu.DisplayY}->{dx},{dy} {w}x{h} nz64={nz}";
             Diagnostics.BootLog.Write(msg);
             Console.WriteLine("[boot] " + msg);
         }

@@ -12,6 +12,7 @@ public static class LibGpu
     static readonly DispEnvEvent _dispEnvEvent = new();
     static int _drawEnvLog;
     static int _dispEnvLog;
+    static int _otCount;
 
     static int _drawLog;
     static int _drawSkipLog;
@@ -23,6 +24,9 @@ public static class LibGpu
         uint addr = c.A0 & 0x1FFFFCu;
         int nodes = 0, words = 0;
         var ops = new int[256];
+        Gpu.SoftCmdIndex = 0;
+        Gpu.SoftLastFillAt = -1;
+        Gpu.SoftLastPolyAt = -1;
         for (int guard = 0; guard < 0x100000; guard++)
         {
             uint header = m.ReadU32(addr);
@@ -30,6 +34,7 @@ public static class LibGpu
             for (uint i = 0; i < count; i++)
             {
                 uint w = m.ReadU32(addr + 4u + i * 4u);
+                if (i == 0) Gpu.SoftCmdIndex++;
                 gpu.WriteGp0(w);
                 if (i == 0) ops[w >> 24]++;
                 words++;
@@ -42,6 +47,10 @@ public static class LibGpu
 
         GpuHle.Backend?.Flush();
         GpuHle.Backend?.LatchFrame();
+        // Sticky soft present: latch the draw FB after OT completes (no mid-FillRect).
+        gpu.LatchSoftDrawBuffer();
+        // Continuous interp-VA census (survives early window closes).
+        if ((++_otCount % 30) == 0) LibGool.DumpFrameVAs();
 
         // Generous logging through title→intro so we can see submit resume/stall.
         if (_drawLog < 60)
@@ -159,6 +168,32 @@ public static class LibGpu
                 var msg = $"display on={gpu.DisplayEnabled} xy={x0},{y0} wh={gpu.DisplayWidth}x{gpu.DisplayHeight} shadowNZ={nz} hleNZ={nzHle}/{w * h}";
                 Console.WriteLine($"[boot] {msg}");
                 Diagnostics.BootLog.Write(msg);
+
+                // Full-framebuffer pixel census on the CPU (soft) VRAM — settles
+                // "soft raster draws nothing" vs "present picks the wrong half".
+                int dispH2 = Math.Max(gpu.DisplayHeight, 1);
+                int nzFull0 = 0, nzFull512 = 0;
+                for (int y = 0; y < dispH2; y++)
+                {
+                    int line = ((y0 + y) & (VramShadow.Height - 1)) * VramShadow.Width;
+                    for (int x = 0; x < 512; x++)
+                    {
+                        if (vram[line + ((x0 >= 512 ? x + 512 : x) & 1023)] != 0) nzFull0++;
+                    }
+                }
+                int oxF = x0 >= 512 ? 0 : 512;
+                for (int y = 0; y < dispH2; y++)
+                {
+                    int line = ((y0 + y) & (VramShadow.Height - 1)) * VramShadow.Width;
+                    for (int x = 0; x < 512; x++)
+                        if (vram[line + ((oxF + x) & 1023)] != 0) nzFull512++;
+                }
+                var msgF = $"fbFull disp half@{(x0 >= 512 ? 512 : 0)} nz={nzFull0} other half@{oxF} nz={nzFull512} (of {512 * dispH2})";
+                Console.WriteLine($"[boot] {msgF}");
+                Diagnostics.BootLog.Write(msgF);
+                Gpu.DumpSoftStats();
+                Sdk.LibGool.DumpFrameVAs();
+                if (_pumpFrames == 30) Gpu.ResetSoftStats(); // measure intro-only interval
                 Gpu.LogTriStats();
             }
         }

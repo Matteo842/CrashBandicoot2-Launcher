@@ -222,6 +222,9 @@ public sealed class CdController
         RecompOne.Runtime.Log.Cd($"cmd 0x{cmd:X2}");
         var prms = new List<byte>();
         while (_paramFifo.Count > 0) prms.Add(_paramFifo.Dequeue());
+        Diagnostics.BootLog.Write(prms.Count > 0
+            ? $"CDcmd {CmdName(cmd)} ({string.Join(" ", prms.Select(p => p.ToString("X2")))}) lba={_seekLba} mode={_mode:X2} reading={_reading}"
+            : $"CDcmd {CmdName(cmd)} lba={_seekLba} mode={_mode:X2} reading={_reading}");
         DbgEvent(prms.Count > 0
             ? $"{CmdName(cmd)} ({string.Join(" ", prms.Select(p => p.ToString("X2")))}) lba={_seekLba}"
             : $"{CmdName(cmd)} lba={_seekLba}");

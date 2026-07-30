@@ -80,6 +80,11 @@ public sealed partial class Gpu
         _texWinOffY = (int)((word >> 15) & 0x1F);
     }
 
+    static int _wipeSkipLog;
+    public static int SoftCmdIndex; // DrawOTag increments around WriteGp0
+    public static int SoftLastFillAt = -1;
+    public static int SoftLastPolyAt = -1;
+
     void FillRect()
     {
         ushort color = To15((int)(_fifo[0] & 0xFF), (int)((_fifo[0] >> 8) & 0xFF), (int)((_fifo[0] >> 16) & 0xFF));
@@ -87,6 +92,7 @@ public sealed partial class Gpu
         int y = (int)((_fifo[1] >> 16) & 0x1FF);
         int w = (int)(((_fifo[2] & 0x3FF) + 0xF) & ~0xF);
         int h = (int)((_fifo[2] >> 16) & 0x1FF);
+        SoftLastFillAt = SoftCmdIndex;
         if (HleOn) HleFill(x, y, w, h, color);
 
         for (int dy = 0; dy < h; dy++)

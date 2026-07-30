@@ -50,6 +50,179 @@ public sealed partial class Gpu
     public bool Display24Bit => _disp24;
     public bool Pal => _pal;
 
+    public int DrawAreaLeft => _drawAreaLeft;
+    public int DrawAreaTop => _drawAreaTop;
+    public int DrawAreaRight => _drawAreaRight;
+    public int DrawAreaBottom => _drawAreaBottom;
+
+    /// <summary>Latch the current draw clip (call after DrawOTag completes).</summary>
+    public void LatchSoftDrawBuffer()
+    {
+        int x = _drawAreaLeft;
+        int y = _drawAreaTop;
+        int w = Math.Max(0, _drawAreaRight - _drawAreaLeft + 1);
+        int h = Math.Max(0, _drawAreaBottom - _drawAreaTop + 1);
+        int dispH = DisplayHeight;
+        if (dispH > 0 && dispH < h) h = dispH;
+        if (w <= 0 || h <= 0) return;
+
+        // Probe several regions — Intro mesh sits near screen centre; the top-left
+        // 64x64 is often empty while the other double-buffer half still holds title stars.
+        int nzDraw = CountNzProbes(x, y, w, h);
+        // If this OT submitted polys, always latch the draw clip (even if probes are
+        // sparse / dark). Switching to the other half freezes Output on the title snap.
+        if (SoftLastPolyAt > 0)
+        {
+            LatchSoftDisplay(x, y, Math.Min(w, 512), h);
+            return;
+        }
+
+        int otherX = x >= 512 ? 0 : 512;
+        int nzOther = CountNzProbes(otherX, y, 512, h);
+        if (nzOther > nzDraw && nzDraw < 8)
+            LatchSoftDisplay(otherX, y, 512, h);
+        else
+            LatchSoftDisplay(x, y, Math.Min(w, 512), h);
+    }
+
+    int CountNzProbes(int dx, int dy, int w, int h)
+    {
+        int pw = Math.Min(64, Math.Max(1, w));
+        int ph = Math.Min(64, Math.Max(1, h));
+        int nz = CountNz(dx, dy, pw, ph); // top-left
+        if (w > pw) nz += CountNz(dx + (w - pw) / 2, dy + Math.Max(0, (h - ph) / 2), pw, ph); // centre
+        if (w > pw * 2) nz += CountNz(dx + w - pw, dy + Math.Max(0, (h - ph) / 2), pw, ph); // mid-right
+        return nz;
+    }
+
+    int CountNz(int dx, int dy, int w, int h)
+    {
+        int nz = 0;
+        var vram = Vram;
+        for (int y = 0; y < h; y++)
+        {
+            int line = ((dy + y) & (VramHeight - 1)) * VramWidth;
+            for (int x = 0; x < w; x++)
+                if (vram[line + ((dx + x) & (VramWidth - 1))] != 0) nz++;
+        }
+        return nz;
+    }
+
+    // Sticky soft present snap — updated after DrawOTag so Output never shows mid-FillRect VRAM.
+    public byte[] SoftSnapRgb { get; private set; } = [];
+    public int SoftSnapW { get; private set; }
+    public int SoftSnapH { get; private set; }
+    public int SoftSnapX { get; private set; }
+    public int SoftSnapY { get; private set; }
+    public bool SoftSnapValid { get; private set; }
+    static int _softLatchLog;
+
+    public void InvalidateSoftSnap()
+    {
+        SoftSnapValid = false;
+        SoftSnapW = SoftSnapH = 0;
+        _softLatchLog = 0; // allow Intro latch breadcrumbs
+    }
+
+    /// <summary>
+    /// Copy a VRAM rect into <see cref="SoftSnapRgb"/>. Prefer the draw buffer after
+    /// DrawOTag (completed FB). Skip replacing a good snap with an empty one.
+    /// </summary>
+    public void LatchSoftDisplay(int? srcX = null, int? srcY = null, int? srcW = null, int? srcH = null)
+    {
+        int dx = srcX ?? _dispVramX;
+        int dy = srcY ?? _dispVramY;
+        int w = srcW ?? DisplayWidth;
+        int h = srcH ?? DisplayHeight;
+        if (w <= 0 || h <= 0) return;
+        w = Math.Min(w, VramWidth);
+        h = Math.Min(h, VramHeight);
+
+        int needed = w * h * 3;
+        if (SoftSnapRgb.Length < needed) SoftSnapRgb = new byte[needed];
+        // Build into a temp so we can reject empty frames that would blank Output.
+        var dest = SoftSnapRgb;
+        bool useTemp = SoftSnapValid;
+        if (useTemp && (_softLatchScratch == null || _softLatchScratch.Length < needed))
+            _softLatchScratch = new byte[needed];
+        if (useTemp) dest = _softLatchScratch!;
+
+        var vram = Vram;
+        int o = 0;
+        int nz = 0;
+        if (_disp24)
+        {
+            for (int y = 0; y < h; y++)
+            {
+                int lineByte = ((dy + y) * VramWidth + dx) * 2;
+                for (int x = 0; x < w; x++)
+                {
+                    int bo = lineByte + x * 3;
+                    byte r = VramByte(vram, bo), g = VramByte(vram, bo + 1), b = VramByte(vram, bo + 2);
+                    dest[o++] = r; dest[o++] = g; dest[o++] = b;
+                    if (r != 0 || g != 0 || b != 0) nz++;
+                }
+            }
+        }
+        else
+        {
+            for (int y = 0; y < h; y++)
+            {
+                int line = ((dy + y) & (VramHeight - 1)) * VramWidth;
+                for (int x = 0; x < w; x++)
+                {
+                    ushort px = vram[line + ((dx + x) & (VramWidth - 1))];
+                    dest[o++] = (byte)((px & 0x1F) << 3);
+                    dest[o++] = (byte)(((px >> 5) & 0x1F) << 3);
+                    dest[o++] = (byte)(((px >> 10) & 0x1F) << 3);
+                    if (px != 0) nz++;
+                }
+            }
+        }
+
+        // Don't clobber a visible snap with a black/empty latch (PutDispEnv often
+        // points at the buffer that has not been drawn yet this frame).
+        if (nz == 0)
+        {
+            if (_softLatchLog < 16)
+            {
+                _softLatchLog++;
+                var skip = SoftSnapValid
+                    ? $"softLatch SKIP empty xy={dx},{dy} {w}x{h}"
+                    : $"softLatch empty (no snap yet) xy={dx},{dy} {w}x{h}";
+                Diagnostics.BootLog.Write(skip);
+                Console.WriteLine("[boot] " + skip);
+            }
+            return;
+        }
+
+        if (useTemp)
+            Buffer.BlockCopy(dest, 0, SoftSnapRgb, 0, needed);
+
+        SoftSnapW = w;
+        SoftSnapH = h;
+        SoftSnapX = dx;
+        SoftSnapY = dy;
+        SoftSnapValid = true;
+
+        if (_softLatchLog < 16)
+        {
+            _softLatchLog++;
+            var msg = $"softLatch xy={dx},{dy} {w}x{h} nz={nz}/{w * h}";
+            Diagnostics.BootLog.Write(msg);
+            Console.WriteLine("[boot] " + msg);
+        }
+    }
+
+    byte[]? _softLatchScratch;
+
+    static byte VramByte(ushort[] vram, int byteOffset)
+    {
+        int hw = (byteOffset >> 1) & (VramWidth * VramHeight - 1);
+        ushort v = vram[hw];
+        return (byte)((byteOffset & 1) == 0 ? v & 0xFF : v >> 8);
+    }
+
     int CyclesPerPixel => _hres368 ? 7 : _hres switch { 0 => 10, 1 => 8, 2 => 5, _ => 4 };
 
     public int DisplayWidth

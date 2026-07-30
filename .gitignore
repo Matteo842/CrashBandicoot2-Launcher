@@ -136,12 +136,14 @@ memcard*
 
 # --- Logs / crash dumps / temp -----------------------------------------------
 logs/
+**/logs/
 *.log
 *.tmp
 *.temp
 *.dmp
 *.stackdump
 hs_err_pid*
+*.console.txt
 
 # --- Secrets / credentials ---------------------------------------------------
 .env
@@ -155,10 +157,29 @@ credentials*.json
 *.pem
 *.key
 
-# --- Native / tooling noise --------------------------------------------------
+# --- Native / tooling noise / build droppings --------------------------------
+# Never publish binaries — they are rebuilt from source (and may embed dumps).
+*.dll
+*.exe
 *.pdb
+*.so
+*.dylib
+*.lib
+*.a
+*.o
+*.obj
+*.ilk
+*.exp
+*.idb
+*.iobj
+*.ipdb
 crash-*.dmp
 minidump*
+
+# Accidental build outputs dropped next to .csproj (not under bin/)
+RecompOne.Runtime/RecompOne.Runtime.*
+RecompOne.Recompiler/recompone.*
+CrashBandicoot2.Launcher/CrashBandicoot2.*
 
 # --- Optional: local notes that might contain dump paths ---------------------
 LOCAL.md
@@ -169,4 +190,11 @@ run.bat
 # Accidental nested Desktop/clone junk
 /CrashBandicoot-Launcher 2/
 
+# --- Local scratch / agent diagnostics (never publish) -----------------------
+_diag*.txt
+_diag_*/
 _run_log.txt
+_run_err.txt
+_run*.txt
+*.boot.txt
+boot.txt

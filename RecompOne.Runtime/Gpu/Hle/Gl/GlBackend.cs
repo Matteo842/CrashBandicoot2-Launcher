@@ -475,32 +475,15 @@ public sealed class GlBackend : IGpuBackend
             _gl.Scissor(cx0 * s, cy0 * s, (uint)Math.Max(0, (cx1 - cx0 + 1) * s), (uint)Math.Max(0, (cy1 - cy0 + 1) * s));
         }
 
-        // One-shot: prove the RT is writable before DrawArrays.
-        if (_flushDiag == 0 && rt != null)
-        {
-            _gl.Disable(EnableCap.ScissorTest);
-            _gl.ClearColor(0f, 1f, 0f, 1f);
-            _gl.Clear(ClearBufferMask.ColorBufferBit);
-            _gl.Enable(EnableCap.ScissorTest);
-        }
-
         _gl.UseProgram(_progPrim);
         _gl.BindVertexArray(_vao);
-        // NEVER bind a texture that is also the current color attachment.
+        // Match Crash 1: sample VRAM + dest. Dest is RT tex while drawing to RT —
+        // checkMask path only; untextured returns before sampling uDest in our shader.
+        uint destTex = rt != null ? rt.Tex : _dummyDestTex;
         _gl.ActiveTexture(TextureUnit.Texture0);
-        _gl.BindTexture(TextureTarget.Texture2D, _dummyDestTex);
+        _gl.BindTexture(TextureTarget.Texture2D, rt != null ? _vram.Texture : _dummyDestTex);
         _gl.ActiveTexture(TextureUnit.Texture1);
-        _gl.BindTexture(TextureTarget.Texture2D, _dummyDestTex);
-        // Textured prims need real VRAM — bind only when this batch can sample it
-        // AND we are not drawing into the VRAM FBO (feedback).
-        bool batchTextured = false;
-        for (int i = 0; i < _count; i++)
-            if ((_verts[i].Texpage & 0x8000) == 0) { batchTextured = true; break; }
-        if (batchTextured && rt != null)
-        {
-            _gl.ActiveTexture(TextureUnit.Texture0);
-            _gl.BindTexture(TextureTarget.Texture2D, _vram.Texture);
-        }
+        _gl.BindTexture(TextureTarget.Texture2D, destTex);
         _gl.ActiveTexture(TextureUnit.Texture0);
         if (rt != null)
         {
@@ -565,7 +548,8 @@ public sealed class GlBackend : IGpuBackend
             _gl.PixelStore(PixelStoreParameter.PackAlignment, 1);
             _gl.ReadPixels(px, py, 1, 1, PixelFormat.Rgba, PixelType.UnsignedByte, rgba);
             var v0 = _verts[0];
-            var msg = $"FlushDiag #{_flushDiag} n={_count} tex={batchTextured} err=0x{err:X} pix=({rgba[0]},{rgba[1]},{rgba[2]},{rgba[3]}) v0=({v0.X},{v0.Y}) c=0x{v0.Color:X6} tp=0x{v0.Texpage:X} bias=({rt.Margin - rt.X},{-rt.Y}) fb={rt.Wide1x}x{rt.H} sc={sDiag}";
+            bool tex0 = (_verts[0].Texpage & 0x8000) == 0;
+            var msg = $"FlushDiag #{_flushDiag} n={_count} tex={tex0} err=0x{err:X} pix=({rgba[0]},{rgba[1]},{rgba[2]},{rgba[3]}) v0=({v0.X},{v0.Y}) c=0x{v0.Color:X6} tp=0x{v0.Texpage:X} bias=({rt.Margin - rt.X},{-rt.Y}) fb={rt.Wide1x}x{rt.H} sc={sDiag}";
             Diagnostics.BootLog.Write(msg);
             Console.WriteLine("[boot] " + msg);
         }

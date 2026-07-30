@@ -1,6 +1,7 @@
 using RecompOne.Runtime.Context;
 using RecompOne.Runtime.Diagnostics;
 using RecompOne.Runtime.Memory;
+using System.Linq;
 
 namespace RecompOne.Runtime.Sdk;
 
@@ -12,6 +13,22 @@ public static class LibGool
     static int _natLog;
     static int _interpLog;
     const int MaxOps = 4096;
+    static readonly List<uint> _frameVAs = new();
+
+    /// <summary>Dump+clear the set of interpreted VAs seen since the last dump.</summary>
+    public static void DumpFrameVAs()
+    {
+        lock (_frameVAs)
+        {
+            if (_frameVAs.Count > 0)
+            {
+                var msg = "interpVAs " + string.Join(' ', _frameVAs.Select(a => $"0x{a:X8}"));
+                Console.WriteLine("[boot] " + msg);
+                Diagnostics.BootLog.Write(msg);
+                _frameVAs.Clear();
+            }
+        }
+    }
 
     /// <summary>
     /// Intro NSF <c>S000001C</c> GOOL entry <c>CdahS</c> native @ VA 0x8010DDB0
@@ -48,6 +65,7 @@ public static class LibGool
             BootLog.Write($"MIPS interp @ 0x{addr:X8} s0=0x{c.S0:X8}");
             _interpLog++;
         }
+        lock (_frameVAs) if (!_frameVAs.Contains(addr)) _frameVAs.Add(addr);
 
         uint pc = addr;
         for (int n = 0; n < MaxOps; n++)
