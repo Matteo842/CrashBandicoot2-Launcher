@@ -31,7 +31,24 @@ public sealed class CpuContext
     public uint T9 { get => _gpr[25]; set => _gpr[25] = value; }
     public uint K0 { get => _gpr[26]; set => _gpr[26] = value; }
     public uint K1 { get => _gpr[27]; set => _gpr[27] = value; }
-    public uint GP { get => _gpr[28]; set => _gpr[28] = value; }
+
+    // PSYQ $gp globals base. Recompiled bodies often reuse $gp as scratch; only
+    // latch the known retail base (set once in func_80049DC4) so gp-relative mem
+    // ops rewritten to GpBase stay correct.
+    const uint RetailGpBase = 0x8005F414u; // 0x80060000 - 0xBEC
+    uint _gpBase = RetailGpBase;
+    public uint GP
+    {
+        get => _gpr[28];
+        set
+        {
+            _gpr[28] = value;
+            if (value == RetailGpBase)
+                _gpBase = value;
+        }
+    }
+    public uint GpBase => _gpBase;
+
     public uint SP { get => _gpr[29]; set => _gpr[29] = value; }
     public uint FP { get => _gpr[30]; set => _gpr[30] = value; }
     public uint RA { get => _gpr[31]; set => _gpr[31] = value; }

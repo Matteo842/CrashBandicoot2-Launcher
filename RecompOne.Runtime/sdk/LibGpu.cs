@@ -16,21 +16,95 @@ public static class LibGpu
 
     static int _drawLog;
     static int _drawSkipLog;
+    static int _introOtClearLog;
+    static int _introPacketLog;
+
+    /// <summary>Project OT clear convention: link forward from the buffer structure's OT head.</summary>
+    public static void ClearOTagR(IMemory m, uint ot, uint n)
+    {
+        if (n == 0) return;
+        uint mask = 0x00FFFFFFu;
+        uint cur = ot & mask;
+        for (uint i = 0; i + 1 < n; i++)
+        {
+            uint next = (cur + 4u) & mask;
+            m.WriteU32(ot + i * 4u, next);
+            cur = next;
+        }
+        m.WriteU32(ot + (n - 1u) * 4u, 0x00FFFFFFu);
+    }
+
+    static void EnsureIntroOtCleared(IMemory m, uint otBase)
+    {
+        // Title calls ClearOTagR every frame via func_80016328; Intro never does, so the
+        // OT heads keep leftover self-looping prims (SHORT nodes=2 hdr→self) and submit
+        // almost nothing. Clear only the OT just drawn so the other buffer can keep building.
+        ClearOTagR(m, otBase, 0x800u);
+        if (_introOtClearLog < 8)
+        {
+            Diagnostics.BootLog.Write($"Intro OT force-clear ot=0x{otBase:X8}");
+            _introOtClearLog++;
+        }
+    }
+
     public static void DrawOTag(CpuContext c, IMemory m)
     {
         var gpu = Runtime.Gpu;
         if (gpu == null) return;
 
-        uint addr = c.A0 & 0x1FFFFCu;
+        // PsyQ ClearOTag links the last slot to this static end-tag. Retail BSS
+        // seeds it as 0x04FFFFFF (4 pad words, next=FFFFFF) — that is valid.
+        // Only repair when the next-link is no longer a terminator (seen: OT walk
+        // escaping into RAM for ~1M nodes / ~65s per Intro frame).
+        const uint OtEndTagVa = 0x8005E070u;
+        {
+            uint endTag = m.ReadU32(OtEndTagVa);
+            if ((endTag & 0x00FFFFFFu) != 0x00FFFFFFu)
+            {
+                Diagnostics.BootLog.Write($"DrawOTag repair end-tag @ 0x{OtEndTagVa:X8} was 0x{endTag:X8}");
+                m.WriteU32(OtEndTagVa, 0x04FFFFFFu);
+            }
+        }
+
+        uint otBase = c.A0;
+        uint addr = otBase & 0x1FFFFCu;
         int nodes = 0, words = 0;
         var ops = new int[256];
+        uint firstHdr = 0, secondHdr = 0;
         Gpu.SoftCmdIndex = 0;
         Gpu.SoftLastFillAt = -1;
         Gpu.SoftLastPolyAt = -1;
-        for (int guard = 0; guard < 0x100000; guard++)
+        // Title/Intro OTs are depth ~2048 (double buffers @ 0x8006370C / 0x800657A0).
+        const int MaxNodes = 8192;
+        const uint OtEndTagBus = OtEndTagVa & 0x1FFFFCu;
+        bool runaway = false;
+        var visited = new System.Collections.Generic.HashSet<uint>();
+        for (int guard = 0; guard < MaxNodes; guard++)
         {
+            if (addr == OtEndTagBus)
+                break;
+            // Guest primitive insertion can form a longer cycle (packet -> OT -> packet).
+            // Stop before executing the same packet again; the old direct-self check
+            // missed these and replayed corrupt commands until MaxNodes.
+            if (!visited.Add(addr))
+            {
+                runaway = true;
+                break;
+            }
+
             uint header = m.ReadU32(addr);
+            if (nodes == 0) firstHdr = header;
+            else if (nodes == 1) secondHdr = header;
             uint count = header >> 24;
+            // Defensive: corrupt RAM as OT can claim absurd packet sizes.
+            if (count > 64) count = 0;
+            if (count > 0 && _introPacketLog < 8 && (m.ReadU32(addr + 4u) >> 24) == 0x24u)
+            {
+                var packetWords = string.Join(' ', Enumerable.Range(0, (int)count)
+                    .Select(i => $"{m.ReadU32(addr + 4u + (uint)i * 4u):X8}"));
+                Diagnostics.BootLog.Write($"Intro GP0 packet addr=0x{addr:X6} count={count} words={packetWords}");
+                _introPacketLog++;
+            }
             for (uint i = 0; i < count; i++)
             {
                 uint w = m.ReadU32(addr + 4u + i * 4u);
@@ -41,8 +115,25 @@ public static class LibGpu
             }
             nodes++;
             uint next = header & 0xFFFFFFu;
-            if (next == 0xFFFFFFu || (next & 0x800000u) != 0) break;
-            addr = next & 0x1FFFFCu;
+            // Retail terminator is 0x00FFFFFF. next==0 is also invalid (walks from addr 0).
+            if (next == 0u || next == 0xFFFFFFu || (next & 0x800000u) != 0) break;
+            uint nextAddr = next & 0x1FFFFCu;
+            if (nextAddr == addr || nextAddr == OtEndTagBus) break;
+            addr = nextAddr;
+            if (guard + 1 >= MaxNodes)
+                runaway = true;
+        }
+
+        if (runaway && _drawLog < 60)
+        {
+            Diagnostics.BootLog.Write(
+                $"DrawOTag RUNAWAY ot=0x{otBase:X8} nodes={nodes} hdr0=0x{firstHdr:X8} hdr1=0x{secondHdr:X8} last=0x{addr:X8}");
+            Console.WriteLine($"[boot] DrawOTag RUNAWAY ot=0x{otBase:X8} nodes={nodes}");
+        }
+        else if (nodes <= 4 && _drawLog < 60)
+        {
+            Diagnostics.BootLog.Write(
+                $"DrawOTag SHORT ot=0x{otBase:X8} nodes={nodes} hdr0=0x{firstHdr:X8} hdr1=0x{secondHdr:X8}");
         }
 
         GpuHle.Backend?.Flush();
@@ -61,10 +152,18 @@ public static class LibGpu
                     .OrderByDescending(i => ops[i])
                     .Take(8)
                     .Select(i => $"0x{i:X2}:{ops[i]}"));
-            Diagnostics.BootLog.Write($"DrawOTag ot=0x{c.A0:X8} nodes={nodes} words={words} ops=[{top}]");
-            if (_drawLog < 8 || (_drawLog % 5) == 0)
-                Console.WriteLine($"[boot] DrawOTag ot=0x{c.A0:X8} nodes={nodes} words={words}");
+            Diagnostics.BootLog.Write($"DrawOTag ot=0x{otBase:X8} nodes={nodes} words={words} ops=[{top}]");
+            if (_drawLog < 8 || (_drawLog % 5) == 0 || runaway)
+                Console.WriteLine($"[boot] DrawOTag ot=0x{otBase:X8} nodes={nodes} words={words}");
             _drawLog++;
+        }
+
+        // Intro skips the title ClearOTagR path — force-clear the drawn OT for next use.
+        uint level = m.ReadU32(0x8005F684u);
+        if (level == 0x1Cu)
+        {
+            Bios.BiosB.AdvanceIntroFrameTimer(m);
+            EnsureIntroOtCleared(m, otBase);
         }
     }
 
@@ -72,6 +171,7 @@ public static class LibGpu
     {
         _drawLog = 0;
         _drawSkipLog = 0;
+        _introPacketLog = 0;
         _drawEnvLog = 0;
         _dispEnvLog = 0;
     }
@@ -118,14 +218,23 @@ public static class LibGpu
         // Title mode skips guest PadUpdate; synth edges once per game frame here
         // (not inside every VSync PresentFrame, which would eat rising edges).
         Bios.BiosB.SynthTitlePadEdges(m);
-        if (_pumpFrames < 180 && (_pumpFrames % 30) == 0)
+        // Keep $gp sane — recompiled scratch sometimes clobbers it; title→Intro load
+        // paths read through GP+4 and hard-fault on garbage (seen as 0x0970xxxx).
+        const uint RetailGp = 0x8005F414u; // 0x80060000 - 0xBEC
+        if (c.GP < 0x80010000u || c.GP >= 0x80200000u)
+            c.GP = RetailGp;
+        // Headless: same HLE as pad Z, after title starfield has been running.
+        if (_pumpFrames == 150 && m.ReadU32(0x8005F684u) == 0x3Cu
+            && m.ReadU32(0x8005F688u) == 0xFFFFFFFFu)
+            Bios.BiosB.ForceTitleStart(m);
+        if (_pumpFrames < 360 && (_pumpFrames % 30) == 0)
         {
             Console.WriteLine($"[boot] PresentPump frame={_pumpFrames}");
             Diagnostics.BootLog.Write($"PresentPump frame={_pumpFrames}");
-            Bios.BiosB.LogTitleState(m);
             var gpu = Runtime.Gpu;
             // Sample once on title and again after Intro should be running.
-            if (gpu != null && (_pumpFrames == 30 || _pumpFrames == 90 || _pumpFrames == 120 || _pumpFrames == 150))
+            if (gpu != null && (_pumpFrames == 30 || _pumpFrames == 90 || _pumpFrames == 120 || _pumpFrames == 150
+                || _pumpFrames == 180 || _pumpFrames == 210 || _pumpFrames == 240 || _pumpFrames == 270 || _pumpFrames == 300))
             {
                 int x0 = gpu.DisplayX, y0 = gpu.DisplayY;
                 int w = Math.Min(gpu.DisplayWidth, 64), h = Math.Min(gpu.DisplayHeight, 64);

@@ -182,6 +182,9 @@ public static class Dispatcher
     public static bool IsMapped(uint addr) => _funcMap.ContainsKey(addr);
 
     static int _pumpCounter;
+    static int _introNativeDispatchLogs;
+    static int _raster42930DispatchLogs;
+    static int _meshPacketDispatchLogs;
 
     public static void Call(CpuContext c, IMemory m, uint addr)
     {
@@ -189,6 +192,19 @@ public static class Dispatcher
         if ((++_pumpCounter & 0x3FF) == 0)
             HostWindow.Pump();
 
+        if (addr >= 0x800ECA00u && addr < 0x800ECC00u && _introNativeDispatchLogs++ < 12)
+        {
+            string target = _funcMap.TryGetValue(addr, out var mapped)
+                ? $"mapped={mapped.Method.DeclaringType?.FullName}.{mapped.Method.Name}"
+                : "unmapped";
+            Diagnostics.BootLog.Write($"INTRO DISPATCH addr=0x{addr:X8} ra=0x{c.RA:X8} s5=0x{c.S5:X8} {target}");
+        }
+        if (addr == 0x80042930u && _raster42930DispatchLogs++ < 8)
+        {
+            Diagnostics.BootLog.Write($"RASTER CALL 42930 active={RasterContinue.Active} " +
+                $"ra=0x{c.RA:X8} a2=0x{c.A2:X8} sp=0x{c.SP:X8}");
+        }
+        if (RasterContinue.TryJump(addr)) return;
         if (BiosKernel.TryDispatch(c, m, addr)) return;
         if (!_funcMap.TryGetValue(addr, out var fn))
         {
@@ -205,7 +221,26 @@ public static class Dispatcher
             // Unmapped mid-entries (EXE jump-table tails) + GOOL opcode-49 NSF natives.
             if (RecompOne.Runtime.Sdk.LibGool.TryInterpretNative(c, m, addr))
                 return;
+            uint opTable = m.ReadU32(0x1F80005Cu);
+            var diag = $"unmapped call state addr=0x{addr:X8} ra=0x{c.RA:X8} " +
+                $"a0=0x{c.A0:X8} a1=0x{c.A1:X8} a2=0x{c.A2:X8} a3=0x{c.A3:X8} " +
+                $"s0=0x{c.S0:X8} s1=0x{c.S1:X8} s2=0x{c.S2:X8} s3=0x{c.S3:X8} " +
+                $"s4=0x{c.S4:X8} s5=0x{c.S5:X8} s6=0x{c.S6:X8} s7=0x{c.S7:X8} " +
+                $"fp=0x{c.FP:X8} gp=0x{c.GP:X8} gpbase=0x{c.GpBase:X8} opTable=0x{opTable:X8}";
+            Diagnostics.BootLog.Write(diag);
+            Diagnostics.BootLog.Write(Environment.StackTrace);
             throw new InvalidOperationException($"unmapped call: 0x{addr:X8}");
+        }
+        if (c.RA == 0x8003E6DCu && _meshPacketDispatchLogs++ < 24)
+        {
+            uint beforeS7 = c.S7;
+            uint beforePacket = m.ReadU32(c.V1 + 0x14u);
+            Diagnostics.BootLog.Write($"MESH DISPATCH enter target=0x{addr:X8} s7=0x{beforeS7:X8} " +
+                $"ctx14=0x{beforePacket:X8} v1=0x{c.V1:X8}");
+            fn(c, m);
+            Diagnostics.BootLog.Write($"MESH DISPATCH leave target=0x{addr:X8} s7=0x{c.S7:X8} " +
+                $"ctx14=0x{m.ReadU32(c.V1 + 0x14u):X8}");
+            return;
         }
         fn(c, m);
     }

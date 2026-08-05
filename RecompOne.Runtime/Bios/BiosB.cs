@@ -117,6 +117,13 @@ public static class BiosB
     static int _titleDiagLogs;
     static bool _drawHoldUnstuckLogged;
     static bool _introModeForcedLogged;
+    static bool _introOtResetDone;
+    static bool _introZoneInheritLogged;
+    static bool _intro18cCleared;
+    static bool _introPathF0Restored;
+    static bool _introParentPcDumped;
+    static bool _introFrameTimerLogged;
+    static int _introFrameHle;
     static int _introHoldStuckFrames;
 
     static void PadRead(IMemory m)
@@ -188,12 +195,86 @@ public static class BiosB
         if (!intro)
         {
             _introHoldStuckFrames = 0;
+            _introOtResetDone = false;
+            _introZoneInheritLogged = false;
+            _intro18cCleared = false;
+            _introPathF0Restored = false;
+            _introParentPcDumped = false;
+            _introFrameTimerLogged = false;
+            _introFrameHle = 0;
             return;
         }
 
         // NOTE: do NOT force mode=0x1C here — mode==0x1C means "load intro" to the
         // game state machine; pinning it loops the level load and gates DrawOTag.
         // mode==-1 during the cutscene is correct retail behaviour.
+
+        // One-shot: wipe leftover title OT self-loops when Intro first becomes active.
+        // Per-frame ClearOTagR is still missing in Intro; LibGpu also clears after DrawOTag.
+        if (!_introOtResetDone && level == LevelIntro)
+        {
+            _introOtResetDone = true;
+            uint a = m.ReadU32(0x800636F0u);
+            uint b = m.ReadU32(0x800636ECu);
+            if (a != 0) RecompOne.Runtime.Sdk.LibGpu.ClearOTagR(m, a + 0x18u, 0x800u);
+            if (b != 0) RecompOne.Runtime.Sdk.LibGpu.ClearOTagR(m, b + 0x18u, 0x800u);
+            var msgOt = $"HLE Intro OT reset a=0x{a:X8} b=0x{b:X8}";
+            Console.WriteLine("[boot] " + msgOt);
+            Diagnostics.BootLog.Write(msgOt);
+            RecompOne.Runtime.Sdk.LibGpu.ResetDrawLogBudget();
+        }
+
+        // Intro director often keeps zone=0 even though initObject should copy the parent's
+        // zone (parent@0x800AD6A4 already has zone 0x800B69E8). Without +18, findZone /
+        // path ops that key off current zone no-op. Inherit once when missing.
+        {
+            const uint cdah = 0x800A1200u;
+            if (m.ReadU32(cdah) == 1u && m.ReadU32(cdah + 0x18u) == 0u)
+            {
+                uint parent = m.ReadU32(cdah + 0x44u);
+                uint pz = parent != 0 ? m.ReadU32(parent + 0x18u) : 0u;
+                if (pz >= 0x80010000u && pz < 0x80200000u)
+                {
+                    m.WriteU32(cdah + 0x18u, pz);
+                    if (!_introZoneInheritLogged)
+                    {
+                        _introZoneInheritLogged = true;
+                        var msgZ = $"HLE Intro inherit zone +18=0x{pz:X8} from parent 0x{parent:X8}";
+                        Console.WriteLine("[boot] " + msgZ);
+                        Diagnostics.BootLog.Write(msgZ);
+                    }
+                }
+            }
+
+            // CdahS2 compares parent+13C < director+18C (signed). Idle/setup may leave
+            // +18C at sentinel 0x80000001 (negative as signed), so the progress block at
+            // DF1C never runs. Once +D4 is bound, widen +18C to a large positive ceiling.
+            if (!_intro18cCleared && m.ReadU32(cdah) == 1u && m.ReadU32(cdah + 0x18Cu) == 0x80000001u
+                && m.ReadU32(cdah + 0xD4u) != 0u)
+            {
+                m.WriteU32(cdah + 0x18Cu, 0x7FFFFFFFu);
+                _intro18cCleared = true;
+                var msg18 = "HLE Intro clear +18C sentinel → 0x7FFFFFFF";
+                Console.WriteLine("[boot] " + msg18);
+                Diagnostics.BootLog.Write(msg18);
+            }
+
+            // Parent path descriptor (+F0) is set at spawn then later cleared while +F8
+            // remains; path helpers early-out on F0==0. Restore the spawn pointer once.
+            if (!_introPathF0Restored)
+            {
+                uint parent = m.ReadU32(cdah + 0x44u);
+                if (parent != 0 && m.ReadU32(parent + 0xF0u) == 0u && m.ReadU32(parent + 0xF8u) != 0u)
+                {
+                    const uint spawnPath = 0x800B9174u;
+                    m.WriteU32(parent + 0xF0u, spawnPath);
+                    _introPathF0Restored = true;
+                    var msgF0 = $"HLE Intro restore parent+F0=0x{spawnPath:X8}";
+                    Console.WriteLine("[boot] " + msgF0);
+                    Diagnostics.BootLog.Write(msgF0);
+                }
+            }
+        }
 
         uint hold = m.ReadU32(DrawHoldAddr);
         if (hold == 0u)
@@ -215,11 +296,77 @@ public static class BiosB
         RecompOne.Runtime.Sdk.LibGpu.ResetDrawLogBudget();
     }
 
+    /// <summary>
+    /// Advance the display timer used by the GOOL wait stack. Intro stops using the
+    /// title PresentPump, so this must be driven by its per-frame DrawOTag instead.
+    /// </summary>
+    public static void AdvanceIntroFrameTimer(IMemory m)
+    {
+        if (m.ReadU32(LevelIdAddr) != LevelIntro) return;
+
+        _introFrameHle++;
+        uint ticks = (uint)_introFrameHle * 40u;
+        uint a = m.ReadU32(0x800636F0u);
+        uint b = m.ReadU32(0x800636ECu);
+        if (a != 0) m.WriteU32(a + 0xCu, ticks);
+        if (b != 0) m.WriteU32(b + 0xCu, ticks);
+
+        if ((!_introFrameTimerLogged && _introFrameHle >= 2) || (_introFrameHle % 30) == 0)
+        {
+            _introFrameTimerLogged = true;
+            var msg = $"HLE Intro advance display+0xC ticks={ticks} (frames≈{_introFrameHle})";
+            Console.WriteLine("[boot] " + msg);
+            Diagnostics.BootLog.Write(msg);
+            if (_introFrameHle <= 180 && (_introFrameHle % 30) == 0)
+                LogIntroDirectorState(m);
+        }
+    }
+
+    static void LogIntroDirectorState(IMemory m)
+    {
+        const uint cdah = 0x800A1200u;
+        uint parent = m.ReadU32(cdah + 0x44u);
+        var sb = new System.Text.StringBuilder(
+            $"introState f={_introFrameHle} cdah[type={m.ReadU32(cdah):X8} pc={m.ReadU32(cdah + 0xC0u):X8} " +
+            $"wait={m.ReadU32(cdah + 0xBCu):X8} state={m.ReadU32(cdah + 0x64u):X8} " +
+            $"zone={m.ReadU32(cdah + 0x18u):X8} d4={m.ReadU32(cdah + 0xD4u):X8} " +
+            $"f0={m.ReadU32(cdah + 0xF0u):X8} 120={m.ReadU32(cdah + 0x120u):X8} " +
+            $"13c={m.ReadU32(cdah + 0x13Cu):X8} 18c={m.ReadU32(cdah + 0x18Cu):X8} parent={parent:X8}]");
+
+        if (parent >= 0x80010000u && parent < 0x80200000u && (parent & 3u) == 0u)
+        {
+            sb.Append($" parent[type={m.ReadU32(parent):X8} pc={m.ReadU32(parent + 0xC0u):X8} " +
+                $"wait={m.ReadU32(parent + 0xBCu):X8} state={m.ReadU32(parent + 0x64u):X8} " +
+                $"zone={m.ReadU32(parent + 0x18u):X8} d4={m.ReadU32(parent + 0xD4u):X8} " +
+                $"f0={m.ReadU32(parent + 0xF0u):X8} f8={m.ReadU32(parent + 0xF8u):X8} " +
+                $"13c={m.ReadU32(parent + 0x13Cu):X8} child={m.ReadU32(parent + 0x4Cu):X8}]");
+        }
+
+        sb.Append(" groups");
+        for (uint i = 0; i < 8; i++)
+        {
+            uint group = 0x8006CDB0u + i * 8u;
+            sb.Append($" {i}[t={m.ReadU32(group):X8} +4={m.ReadU32(group + 4u):X8} +4c={m.ReadU32(group + 0x4Cu):X8}]");
+        }
+
+        var msg = sb.ToString();
+        Console.WriteLine("[boot] " + msg);
+        Diagnostics.BootLog.Write(msg);
+    }
+
     static void TryHleTitleStart(IMemory m)
     {
         if (m.ReadU32(LevelIdAddr) != LevelTitle) return;
         uint tap = _padBuf1 != 0 ? m.ReadU32(_padBuf1 + 0x24) : 0;
         if ((tap & (CrashStart | CrashCross)) == 0) return;
+        ForceTitleStart(m);
+    }
+
+    /// <summary>Title → Intro mode poke (pad HLE + headless kick).</summary>
+    public static void ForceTitleStart(IMemory m)
+    {
+        if (m.ReadU32(LevelIdAddr) != LevelTitle) return;
+        if (m.ReadU32(GameModeAddr) == LevelIntro) return;
         m.WriteU32(GameModeAddr, LevelIntro);
         // Mode-change path stores hold=2; don't enter Intro with DrawOTag gated.
         m.WriteU32(DrawHoldAddr, 0u);
@@ -258,6 +405,97 @@ public static class BiosB
         var msg = $"title mode=0x{mode:X8} level=0x{level:X} world=0x{world:X8} flags=0x{flags:X8} cam=0x{cam:X8} hold=0x{hold:X8} drawF={drawFrames} objs=0x{objList:X8} type=0x{type:X} held=0x{held:X4} tap=0x{tap:X4}";
         Console.WriteLine("[boot] " + msg);
         Diagnostics.BootLog.Write(msg);
+
+        // Intro director object (CdahS s0) — watch for frozen state/anim words.
+        if (level == LevelIntro)
+        {
+            const uint cdah = 0x800A1200u;
+            var sb = new System.Text.StringBuilder("intro obj@0x800A1200");
+            foreach (uint off in new uint[] {
+                0x00, 0x14, 0x18, 0x1C, 0x20, 0x24, 0x28, 0x44, 0x48, 0x4C, 0x50,
+                0x60, 0x64, 0x68, 0x6C, 0x70, 0xA0, 0xAC, 0xBC, 0xC0, 0xC8, 0xCC,
+                0xD4, 0xE8, 0xEC, 0xF4, 0xF8, 0xFC,
+                0x118, 0x120, 0x13C, 0x174, 0x18C
+            })
+                sb.Append($" +{off:X2}=0x{m.ReadU32(cdah + off):X8}");
+            uint parent2 = m.ReadU32(cdah + 0x44u);
+            if (parent2 != 0)
+            {
+                sb.Append($" parent@0x{parent2:X8}+00=0x{m.ReadU32(parent2):X8}+14=0x{m.ReadU32(parent2 + 0x14u):X8}+18=0x{m.ReadU32(parent2 + 0x18u):X8}+AC=0x{m.ReadU32(parent2 + 0xACu):X8}+C0=0x{m.ReadU32(parent2 + 0xC0u):X8}+D4=0x{m.ReadU32(parent2 + 0xD4u):X8}+13C=0x{m.ReadU32(parent2 + 0x13Cu):X8}+60=0x{m.ReadU32(parent2 + 0x60u):X8}+64=0x{m.ReadU32(parent2 + 0x64u):X8}+68=0x{m.ReadU32(parent2 + 0x68u):X8}+F0=0x{m.ReadU32(parent2 + 0xF0u):X8}+F4=0x{m.ReadU32(parent2 + 0xF4u):X8}+F8=0x{m.ReadU32(parent2 + 0xF8u):X8}+E8=0x{m.ReadU32(parent2 + 0xE8u):X8}+EC=0x{m.ReadU32(parent2 + 0xECu):X8}");
+                if (!_introParentPcDumped)
+                {
+                    _introParentPcDumped = true;
+                    uint ppc = m.ReadU32(parent2 + 0xC0u);
+                    uint p14 = m.ReadU32(parent2 + 0x14u);
+                    var pb = new System.Text.StringBuilder($"parent PC@0x{ppc:X8} words");
+                    if (ppc >= 0x80010000u && ppc < 0x80200000u)
+                        for (uint i = 0; i < 16; i++) pb.Append($" {m.ReadU32(ppc + i * 4):X8}");
+                    pb.Append($" | +14@0x{p14:X8}");
+                    if (p14 >= 0x80010000u && p14 < 0x80200000u)
+                        for (uint i = 0; i < 16; i++) pb.Append($" {m.ReadU32(p14 + i * 4):X8}");
+                    // Also dump a few words around path descriptor F0 and object wait/event fields.
+                    uint f0 = m.ReadU32(parent2 + 0xF0u);
+                    pb.Append($" | F0@0x{f0:X8}");
+                    if (f0 >= 0x80010000u && f0 < 0x80200000u)
+                        for (uint i = 0; i < 8; i++) pb.Append($" {m.ReadU32(f0 + i * 4):X8}");
+                    pb.Append($" +10=0x{m.ReadU32(parent2 + 0x10u):X8}+BC=0x{m.ReadU32(parent2 + 0xBCu):X8}+C8=0x{m.ReadU32(parent2 + 0xC8u):X8}+CC=0x{m.ReadU32(parent2 + 0xCCu):X8}+118=0x{m.ReadU32(parent2 + 0x118u):X8}+120=0x{m.ReadU32(parent2 + 0x120u):X8}");
+                    uint bc = m.ReadU32(parent2 + 0xBCu);
+                    if (bc >= 0x80010004u && bc < 0x80200000u)
+                        pb.Append($" wait@BC-4=0x{m.ReadU32(bc - 4u):X8}");
+                    pb.Append($" frames=0x{m.ReadU32(0x8006CDFCu):X8}");
+                    uint opTab = m.ReadU32(0x1F80005Cu);
+                    pb.Append($" opTab=0x{opTab:X8}");
+                    if (opTab >= 0x80010000u && opTab < 0x80200000u)
+                    {
+                        pb.Append(" handlers");
+                        foreach (uint op in new uint[] { 0x11, 0x35, 0x39, 0x3B, 0x3C, 0x3F, 0x43, 0x49 })
+                            pb.Append($" {op:X2}=0x{m.ReadU32(opTab + op * 4u):X8}");
+                    }
+                    Diagnostics.BootLog.Write(pb.ToString());
+                    Console.WriteLine("[boot] " + pb);
+                }
+            }
+            // func_80028C9C: level struct from *(0x80060B64)+0x10; walks flag words at
+            // +0x1B4 and slots at +0x194 (count at +0x190). Match bit2 → candidate for +D4.
+            uint lvlRoot = m.ReadU32(0x80060B64u);
+            if (lvlRoot != 0)
+            {
+                uint lvl = m.ReadU32(lvlRoot + 0x10u);
+                if (lvl != 0)
+                {
+                    uint listCount = m.ReadU32(lvl + 0x190u);
+                    sb.Append($" lvl@0x{lvl:X8} n={listCount}");
+                    uint n = Math.Min(listCount, 8u);
+                    for (uint i = 0; i < n; i++)
+                    {
+                        uint fl = m.ReadU32(lvl + 0x1B4u + i * 4u);
+                        uint slot = m.ReadU32(lvl + 0x194u + i * 4u);
+                        sb.Append($" [{i}]fl=0x{fl:X8}slot=0x{slot:X8}");
+                        // slot may be a handle; only chase +0x14 when it looks like a KSEG object ptr
+                        if (slot >= 0x80010000u && slot < 0x80200000u && (slot & 3u) == 0)
+                        {
+                            // Prefer paged-in object (*slot) when the handle still points at a stub.
+                            uint obj = m.ReadU32(slot);
+                            if (obj < 0x80010000u || obj >= 0x80200000u || (obj & 3u) != 0)
+                                obj = slot;
+                            sb.Append($" obj=0x{obj:X8} pos=({m.ReadU32(obj+0x60u):X8},{m.ReadU32(obj+0x64u):X8},{m.ReadU32(obj+0x68u):X8})");
+                            uint zone = m.ReadU32(obj + 0x14u);
+                            if (zone >= 0x80010000u && zone < 0x80200000u && (zone & 3u) == 0)
+                            {
+                                sb.Append($"+14=0x{zone:X8}");
+                                sb.Append($" aabb=({m.ReadU32(zone):X},{m.ReadU32(zone+4):X},{m.ReadU32(zone+8):X}+{m.ReadU32(zone+0xCu):X},{m.ReadU32(zone+0x10u):X},{m.ReadU32(zone+0x14u):X})");
+                                // Zone header neighbors — look for a world origin / matrix near AABB.
+                                sb.Append($" zh=({m.ReadU32(zone+0x18u):X},{m.ReadU32(zone+0x1Cu):X},{m.ReadU32(zone+0x20u):X},{m.ReadU32(zone+0x24u):X},{m.ReadU32(zone+0x28u):X},{m.ReadU32(zone+0x2Cu):X})");
+                            }
+                        }
+                    }
+                    sb.Append($" ce04n={m.ReadU32(0x8006CE04u)}");
+                }
+            }
+            var msg2 = sb.ToString();
+            Console.WriteLine("[boot] " + msg2);
+            Diagnostics.BootLog.Write(msg2);
+        }
     }
 
     static void WriteInitPadBuf(IMemory m, uint buf, int port, ushort buttons,

@@ -10,10 +10,12 @@ public sealed partial class Gpu
     // Soft-path drop census — read+reset from LibGpu census points.
     public static long StatPoly, StatPolyDropSpan, StatPolyDropArea, StatPolyDropClip, StatPixels, StatRect, StatLineSeg;
     static int _polyDumpLeft;
+    static int _spanDumpLeft;
     public static void ResetSoftStats()
     {
         StatPoly = StatPolyDropSpan = StatPolyDropArea = StatPolyDropClip = StatPixels = StatRect = StatLineSeg = 0;
         _polyDumpLeft = 6;
+        _spanDumpLeft = 8;
     }
     public static void DumpSoftStats()
     {
@@ -137,7 +139,19 @@ public sealed partial class Gpu
     {
         int spanX = Math.Max(a.X, Math.Max(b.X, c.X)) - Math.Min(a.X, Math.Min(b.X, c.X));
         int spanY = Math.Max(a.Y, Math.Max(b.Y, c.Y)) - Math.Min(a.Y, Math.Min(b.Y, c.Y));
-        if (spanX > 1023 || spanY > 511) { StatPolyDropSpan++; return; }
+        if (spanX > 1023 || spanY > 511)
+        {
+            StatPolyDropSpan++;
+            if (_spanDumpLeft > 0)
+            {
+                _spanDumpLeft--;
+                var msg = $"dropSpan tex={tex} raw={raw} semi={semi} tpage=({_texPageX},{_texPageY}) depth={_texDepth} clut=0x{clut:X4} " +
+                          $"v0=({a.X},{a.Y};{a.U},{a.V}) v1=({b.X},{b.Y};{b.U},{b.V}) v2=({c.X},{c.Y};{c.U},{c.V}) span={spanX}x{spanY}";
+                Console.WriteLine("[boot] " + msg);
+                Diagnostics.BootLog.Write(msg);
+            }
+            return;
+        }
 
         long area = (long)(b.X - a.X) * (c.Y - a.Y) - (long)(b.Y - a.Y) * (c.X - a.X);
         if (area == 0) { StatPolyDropArea++; return; }

@@ -270,6 +270,13 @@ public sealed class Spu
 
     void KeyOn(ushort mask, bool hi)
     {
+        if (mask != 0 && _keyOnLog < 16)
+        {
+            _keyOnLog++;
+            var msg = $"Spu KeyOn {(hi ? "hi" : "lo")}=0x{mask:X4}";
+            Console.WriteLine("[boot] " + msg);
+            Diagnostics.BootLog.Write(msg);
+        }
         int b = hi ? 16 : 0;
         for (int i = 0; i < (hi ? 8 : 16); i++)
         {
@@ -287,6 +294,8 @@ public sealed class Spu
             _endx &= ~(1u << (b + i));
         }
     }
+
+    static int _keyOnLog;
 
     void KeyOff(ushort mask, bool hi)
     {

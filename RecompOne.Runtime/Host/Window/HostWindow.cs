@@ -35,6 +35,7 @@ public static class HostWindow
     static bool _layoutPending = true;
     static bool _closed;
     static DiscPickerPopup? _discPicker;
+    static bool _unexpectedCloseHandled;
 
     public static void Initialize(string title)
     {
@@ -73,7 +74,7 @@ public static class HostWindow
         catch (Exception e) {
             Console.WriteLine(e.Message);
         }
-        if (_window.IsClosing) { Diagnostics.BootLog.Write("window closing -> Exit(0)"); Runtime.Shutdown(); Environment.Exit(0); }
+        if (_window.IsClosing) { HandleUnexpectedClose("Present"); return; }
         InputManager.Poll();
         if (InputManager.ConsumeTopBarToggle())
         {
@@ -99,8 +100,8 @@ public static class HostWindow
     public static void KeepAlive()
     {
         if (_headless || _window == null) return;
-        // Cheap filter: only check the clock every 4096 calls.
-        if ((++_uiPumpCounter & 0xFFF) != 0) return;
+        // Busy interpreted paths can starve normal presents for seconds.
+        if ((++_uiPumpCounter & 0x3F) != 0) return;
         var now = Environment.TickCount64;
         if (now < _nextUiPumpMs) return;
         _nextUiPumpMs = now + 16; // ~60 Hz
@@ -111,8 +112,18 @@ public static class HostWindow
     {
         if (_headless || _window == null) return;
         try { _window.DoEvents(); } catch { }
-        if (_window.IsClosing) { Diagnostics.BootLog.Write("window closing -> Exit(0)"); Runtime.Shutdown(); Environment.Exit(0); }
+        if (_window.IsClosing) { HandleUnexpectedClose("Pump"); return; }
         _window.DoRender();
+    }
+
+    static void HandleUnexpectedClose(string where)
+    {
+        if (_unexpectedCloseHandled) return;
+        _unexpectedCloseHandled = true;
+        Diagnostics.BootLog.Write($"window closing seen in {where} -> switching headless");
+        try { InputManager.Shutdown(); } catch { }
+        _headless = true;
+        _window = null;
     }
 
     public static void Shutdown()
@@ -139,7 +150,7 @@ public static class HostWindow
         while (StartupNotice.NeedsAck)
         {
             try { _window.DoEvents(); } catch { }
-            if (_window.IsClosing) { Diagnostics.BootLog.Write("window closing -> Exit(0)"); Runtime.Shutdown(); Environment.Exit(0); }
+            if (_window.IsClosing) { HandleUnexpectedClose("WaitForValidDisc/Notice"); return; }
             InputManager.Poll();
             _window.DoRender();
         }
@@ -150,7 +161,7 @@ public static class HostWindow
             if (!string.IsNullOrWhiteSpace(path) && File.Exists(path)) return;
 
             try { _window.DoEvents(); } catch { }
-            if (_window.IsClosing) { Diagnostics.BootLog.Write("window closing -> Exit(0)"); Runtime.Shutdown(); Environment.Exit(0); }
+            if (_window.IsClosing) { HandleUnexpectedClose("WaitForValidDisc/Disc"); return; }
             InputManager.Poll();
             _window.DoRender();
         }
@@ -308,6 +319,7 @@ public static class HostWindow
     {
         if (_closed) return;
         _closed = true;
+        Diagnostics.BootLog.Write("HostWindow.OnClosing");
         ConfigManager.SaveView(PanelManager.Panels);
         ConfigManager.SaveGame();
         PanelManager.Shutdown();

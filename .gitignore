@@ -198,3 +198,8 @@ _run_err.txt
 _run*.txt
 *.boot.txt
 boot.txt
+/script
+*.txt
+_compile_game.csx
+/_compile_tool
+/_apply_postpass

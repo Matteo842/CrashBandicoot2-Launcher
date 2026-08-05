@@ -121,6 +121,12 @@ public static class LibCd
         uint buf = c.A1;
         _mode = (byte)c.A2;
         Diagnostics.BootLog.Write($"CdRead sectors={sectors} buf=0x{buf:X8} mode=0x{_mode:X2}");
+        if (sectors == 0)
+        {
+            var msg = $"CdRead(0) ra=0x{c.RA:X8} s0=0x{c.S0:X8} s1=0x{c.S1:X8} s2=0x{c.S2:X8} s5=0x{c.S5:X8} mode=0x{m.ReadU32(0x8005F688u):X8} level=0x{m.ReadU32(0x8005F684u):X8}";
+            Console.WriteLine("[boot] " + msg);
+            Diagnostics.BootLog.Write(msg);
+        }
         int lba = CurrentLba;
         if (IsAudioRegion(lba) && (_mode & 0x01) == 0)
         {
@@ -165,9 +171,21 @@ public static class LibCd
         while (_cbData != 0)
         {
             _lastIntr = DataReady;
+            if (_cbReady != 0)
+            {
+                var msg = $"CdTick ready cb=0x{_cbReady:X8} lba={CurrentLba}";
+                Console.WriteLine("[boot] " + msg);
+                Diagnostics.BootLog.Write(msg);
+            }
             if (_cbReady != 0) { c.A0 = DataReady; c.A1 = 0; Dispatcher.Call(c, m, _cbReady); }
             AdvancePos(1);
             Dispatcher.LoadByLba(CurrentLba);
+            if (_cbData != 0)
+            {
+                var msg = $"CdTick data cb=0x{_cbData:X8} lba={CurrentLba}";
+                Console.WriteLine("[boot] " + msg);
+                Diagnostics.BootLog.Write(msg);
+            }
             if (_cbData != 0) { c.A0 = DataReady; c.A1 = 0; Dispatcher.Call(c, m, _cbData); }
         }
         c.Restore(snap);
@@ -344,6 +362,13 @@ public static class LibCd
         _com = com;
         _lastIntr = Complete;
         Log.Sdk($"Cd cmd 0x{com:X2} param=0x{param:X8} pos={_pos[0]:X2}:{_pos[1]:X2}:{_pos[2]:X2}");
+        // Breadcrumb interesting CD ops (Play / ReadS / Mute / Demute / Setmode / Setfilter).
+        if (com is Play or ReadS or Mute or Demute or Setmode or Setfilter or Pause or Stop)
+        {
+            var msg = $"CdControl 0x{com:X2} param=0x{param:X8} mode=0x{_mode:X2} lba={CurrentLba}";
+            Console.WriteLine("[boot] " + msg);
+            Diagnostics.BootLog.Write(msg);
+        }
 
         switch (com)
         {

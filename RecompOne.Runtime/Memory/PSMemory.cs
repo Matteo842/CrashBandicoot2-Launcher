@@ -18,6 +18,13 @@ public sealed class PSMemory : IMemory
     private readonly Timers _timers = new();
     private readonly Dma _dma;
     private CdController? _cd;
+    private static int _introParentOverwriteLogs;
+    private static int _introPointerWriteLogs;
+    private static int _introPcWriteLogs;
+    private static int _introFieldWriteLogs;
+    private static uint _introFt3Base;
+    private static int _introFt3PacketCount;
+    private static int _introFt3WriteLogs;
 
     public ReadOnlySpan<byte> Ram => _ram;
     internal byte[] RamBuffer => _ram;
@@ -86,6 +93,13 @@ public sealed class PSMemory : IMemory
         if (phys >= MemoryMap.BiosBase && phys < MemoryMap.BiosBase + MemoryMap.BiosSize)
             return _bios.AsSpan((int)(phys - MemoryMap.BiosBase), size);
 
+        var cpu = Runtime.Cpu;
+        if (cpu != null)
+            Diagnostics.BootLog.Write($"unmapped Resolve addr=0x{address:X8} size={size} ra=0x{cpu.RA:X8} " +
+                $"a0=0x{cpu.A0:X8} a1=0x{cpu.A1:X8} a2=0x{cpu.A2:X8} a3=0x{cpu.A3:X8} " +
+                $"s0=0x{cpu.S0:X8} s1=0x{cpu.S1:X8} s2=0x{cpu.S2:X8} s3=0x{cpu.S3:X8} " +
+                $"s4=0x{cpu.S4:X8} s5=0x{cpu.S5:X8} s6=0x{cpu.S6:X8} s7=0x{cpu.S7:X8} " +
+                $"sp=0x{cpu.SP:X8} fp=0x{cpu.FP:X8} gp=0x{cpu.GP:X8}");
         throw new InvalidOperationException($"unmapped address: 0x{address:X8}");
     }
 
@@ -124,7 +138,27 @@ public sealed class PSMemory : IMemory
         if (_cd != null && IsCd(phys)) return _cd.Read(phys);
         if (IsSpu(phys)) return (uint)(_spu.ReadReg16(phys) | (_spu.ReadReg16(phys + 2) << 16));
         if (Timers.InRange(phys) && _timers.TryRead(phys, out uint tv)) return tv;
-        var s = Resolve(address, 4);
+        Span<byte> s;
+        try
+        {
+            s = Resolve(address, 4);
+        }
+        catch (InvalidOperationException)
+        {
+            var c = Runtime.Cpu;
+            if (c != null)
+            {
+                Diagnostics.BootLog.Write($"unmapped ReadU32 addr=0x{address:X8} ra=0x{c.RA:X8} " +
+                    $"a0=0x{c.A0:X8} a1=0x{c.A1:X8} a2=0x{c.A2:X8} a3=0x{c.A3:X8} " +
+                    $"s0=0x{c.S0:X8} s1=0x{c.S1:X8} s2=0x{c.S2:X8} s3=0x{c.S3:X8} " +
+                    $"s4=0x{c.S4:X8} s5=0x{c.S5:X8} s6=0x{c.S6:X8} s7=0x{c.S7:X8} " +
+                    $"sp=0x{c.SP:X8} fp=0x{c.FP:X8} gp=0x{c.GP:X8}");
+                var table = new System.Text.StringBuilder("TABLE 80010590");
+                for (uint i = 0; i < 15; i++) table.Append($" {ReadU32(0x80010590u + i * 4u):X8}");
+                Diagnostics.BootLog.Write(table.ToString());
+            }
+            throw;
+        }
         return (uint)(s[0] | (s[1] << 8) | (s[2] << 16) | (s[3] << 24));
     }
 
@@ -162,6 +196,122 @@ public sealed class PSMemory : IMemory
     {
         uint phys = MemoryMap.ToPhysical(address);
         TrackWrite(phys, 4);
+        if ((value >> 24) == 0x24u && phys >= 0x00060000u && phys < 0x00100000u &&
+            ReadU32(0x8005F684u) == 0x1Cu)
+        {
+            _introFt3Base = phys - 4u;
+            _introFt3PacketCount++;
+        }
+        if (_introFt3PacketCount <= 4 && _introFt3Base != 0u &&
+            phys >= _introFt3Base && phys < _introFt3Base + 0x28u && _introFt3WriteLogs < 80)
+        {
+            _introFt3WriteLogs++;
+            var c = Runtime.Cpu;
+            Diagnostics.BootLog.Write(c == null
+                ? $"FT3 WRITE pkt={_introFt3PacketCount} base=0x{_introFt3Base:X6} +0x{phys - _introFt3Base:X2}=0x{value:X8}"
+                : $"FT3 WRITE pkt={_introFt3PacketCount} base=0x{_introFt3Base:X6} +0x{phys - _introFt3Base:X2}=0x{value:X8} ra=0x{c.RA:X8} a0=0x{c.A0:X8} a1=0x{c.A1:X8} a2=0x{c.A2:X8} a3=0x{c.A3:X8} v0=0x{c.V0:X8} v1=0x{c.V1:X8} t0=0x{c.T0:X8} t1=0x{c.T1:X8} t2=0x{c.T2:X8} t3=0x{c.T3:X8} sp=0x{c.SP:X8}");
+        }
+        if (phys == 0x000A14FCu && _introPcWriteLogs++ < 80)
+        {
+            uint old = ReadU32(address);
+            var c = Runtime.Cpu;
+            Diagnostics.BootLog.Write(c == null
+                ? $"INTRO PC WRITE old=0x{old:X8} new=0x{value:X8}"
+                : $"INTRO PC WRITE old=0x{old:X8} new=0x{value:X8} ra=0x{c.RA:X8} s5=0x{c.S5:X8} a0=0x{c.A0:X8} a1=0x{c.A1:X8} v0=0x{c.V0:X8}");
+        }
+        if (phys == 0x000A14D8u && _introFieldWriteLogs++ < 24)
+        {
+            uint old = ReadU32(address);
+            var c = Runtime.Cpu;
+            Diagnostics.BootLog.Write(c == null
+                ? $"INTRO FIELD9C WRITE old=0x{old:X8} new=0x{value:X8}"
+                : $"INTRO FIELD9C WRITE old=0x{old:X8} new=0x{value:X8} ra=0x{c.RA:X8} s5=0x{c.S5:X8} s6=0x{c.S6:X8} a0=0x{c.A0:X8} a1=0x{c.A1:X8} v0=0x{c.V0:X8}");
+        }
+        bool suspiciousIntroStackWrite = phys == 0x000A14F8u
+            && (value < 0x800A1400u || value >= 0x800A1800u);
+        if ((suspiciousIntroStackWrite || phys == 0x000A1244u) && _introPointerWriteLogs < 32)
+        {
+            uint old = ReadU32(address);
+            if (old != value)
+            {
+                _introPointerWriteLogs++;
+                var c = Runtime.Cpu;
+                Diagnostics.BootLog.Write(c == null
+                    ? $"INTRO PTR WRITE addr=0x{address:X8} old=0x{old:X8} new=0x{value:X8}"
+                    : $"INTRO PTR WRITE addr=0x{address:X8} old=0x{old:X8} new=0x{value:X8} ra=0x{c.RA:X8} s0=0x{c.S0:X8} s1=0x{c.S1:X8} s2=0x{c.S2:X8} s3=0x{c.S3:X8} s4=0x{c.S4:X8} s5=0x{c.S5:X8} s6=0x{c.S6:X8} a0=0x{c.A0:X8} a1=0x{c.A1:X8} a2=0x{c.A2:X8} v0=0x{c.V0:X8}");
+            }
+        }
+        if (value == 0x01000000u && phys >= 0x000AD6A4u && phys < 0x000AD864u && _introParentOverwriteLogs < 24)
+        {
+            uint old = ReadU32(address);
+            if (old != value)
+            {
+                if (_introParentOverwriteLogs == 0)
+                {
+                    var code = new System.Text.StringBuilder("INTRO GOOL @0x800ECAC0");
+                    for (uint i = 0; i < 48; i++) code.Append($" {ReadU32(0x800ECAC0u + i * 4u):X8}");
+                    Diagnostics.BootLog.Write(code.ToString());
+                    uint table = ReadU32(0x1F80005Cu);
+                    Diagnostics.BootLog.Write($"INTRO OPTABLE base=0x{table:X8} e4=0x{ReadU32(table + 0xE4u):X8} 100=0x{ReadU32(table + 0x100u):X8} 44=0x{ReadU32(table + 0x44u):X8} 108=0x{ReadU32(table + 0x108u):X8}");
+                    var asset = new System.Text.StringBuilder("INTRO ASSET @0x8006F9E0");
+                    for (uint i = 0; i < 16; i++) asset.Append($" {ReadU32(0x8006F9E0u + i * 4u):X8}");
+                    Diagnostics.BootLog.Write(asset.ToString());
+                    var loaded = new System.Text.StringBuilder($"INTRO LOADED count={ReadU32(0x80067848u):X8} records");
+                    for (uint i = 0; i < 24; i++) loaded.Append($" {ReadU32(0x8006784Cu + i * 4u):X8}");
+                    Diagnostics.BootLog.Write(loaded.ToString());
+                    var refs = new System.Text.StringBuilder("INTRO HASH 58000E65 matches");
+                    for (uint p = 0; p + 4u <= (uint)_ram.Length; p += 4u)
+                    {
+                        uint w = (uint)(_ram[p] | (_ram[p + 1] << 8) | (_ram[p + 2] << 16) | (_ram[p + 3] << 24));
+                        if (w == 0x58000E65u)
+                            refs.Append($" 0x{0x80000000u + p:X8}");
+                    }
+                    Diagnostics.BootLog.Write(refs.ToString());
+                    foreach (uint dumpBase in new[] { 0x80067BE0u, 0x8006F9C0u, 0x800B6200u })
+                    {
+                        var dump = new System.Text.StringBuilder($"INTRO MEM @0x{dumpBase:X8}");
+                        for (uint i = 0; i < 32; i++) dump.Append($" {ReadU32(dumpBase + i * 4u):X8}");
+                        Diagnostics.BootLog.Write(dump.ToString());
+                    }
+                }
+                _introParentOverwriteLogs++;
+                var c = Runtime.Cpu;
+                Diagnostics.BootLog.Write(c == null
+                    ? $"PARENT OVERWRITE addr=0x{address:X8} old=0x{old:X8} new=0x{value:X8}"
+                    : $"PARENT OVERWRITE addr=0x{address:X8} old=0x{old:X8} new=0x{value:X8} ra=0x{c.RA:X8} pc? s0=0x{c.S0:X8} s1=0x{c.S1:X8} s2=0x{c.S2:X8} s3=0x{c.S3:X8} s4=0x{c.S4:X8} a0=0x{c.A0:X8} a1=0x{c.A1:X8} a2=0x{c.A2:X8}");
+            }
+        }
+        // Intro draw mid-entries clobber func_80011800's S3/S4. That path then stores
+        // S4 into DrawHold (0x80067844) and can reload level from a trashed mode word.
+        // Scratchpad (0x1F800000) in DrawHold and level=-1 mid-Intro are the crash signature.
+        if (address == 0x80067844u && value == 0x1F800000u)
+        {
+            uint level = ReadU32(0x8005F684u);
+            uint mode = ReadU32(0x8005F688u);
+            if (level == 0x1Cu || mode == 0x1Cu)
+            {
+                Diagnostics.BootLog.Write("HLE block DrawHold=scratchpad during Intro → 0");
+                value = 0u;
+            }
+        }
+        if (address == 0x8005F684u && value == 0xFFFFFFFFu)
+        {
+            uint level = ReadU32(0x8005F684u);
+            if (level == 0x1Cu)
+            {
+                Diagnostics.BootLog.Write("HLE block level=-1 during Intro (keep 0x1C)");
+                return;
+            }
+        }
+        if (address is 0x8005F688u or 0x8005F684u or 0x80067844u)
+        {
+            uint old = ReadU32(address);
+            var c = Runtime.Cpu;
+            if (c != null)
+                Diagnostics.BootLog.Write($"watch WriteU32 addr=0x{address:X8} old=0x{old:X8} new=0x{value:X8} ra=0x{c.RA:X8} gp=0x{c.GP:X8} gpbase=0x{c.GpBase:X8} s0=0x{c.S0:X8} s1=0x{c.S1:X8} s2=0x{c.S2:X8} s3=0x{c.S3:X8} s4=0x{c.S4:X8} s5=0x{c.S5:X8}");
+            else
+                Diagnostics.BootLog.Write($"watch WriteU32 addr=0x{address:X8} old=0x{old:X8} new=0x{value:X8}");
+        }
         if (phys == 0x1F801810u) { _gpu.WriteGp0(value); return; }
         if (phys == 0x1F801814u) { _gpu.WriteGp1(value); return; }
         if (phys == 0x1F801820u) { _mdec.Write0(value); return; }

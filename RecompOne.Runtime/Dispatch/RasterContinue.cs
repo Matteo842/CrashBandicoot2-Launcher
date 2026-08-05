@@ -10,15 +10,37 @@ public static class RasterContinue
 {
     // Single-threaded guest CPU; plain static avoids ThreadStatic edge cases across pumps.
     static uint _addr;
+    static bool _active;
 
     public static uint Addr => _addr;
+    public static bool Active => _active;
+
+    public static void Begin()
+    {
+        _addr = 0u;
+        _active = true;
+    }
 
     public static void Jump(uint addr) => _addr = addr;
+
+    public static bool TryJump(uint addr)
+    {
+        if (!_active || addr != 0x80042930u)
+            return false;
+        _addr = addr;
+        return true;
+    }
 
     public static uint Take()
     {
         var a = _addr;
         _addr = 0;
         return a;
+    }
+
+    public static uint EndTake()
+    {
+        _active = false;
+        return Take();
     }
 }
